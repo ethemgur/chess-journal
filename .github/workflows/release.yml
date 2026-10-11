@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "*"
+  # Manual run: releases the version in manifest.json (the tag is created by gh).
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -24,5 +26,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" --title="$tag" --generate-notes main.js manifest.json styles.css
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then tag="$GITHUB_REF_NAME"; else tag="$(node -p 'require("./manifest.json").version')"; fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title="$tag" --generate-notes main.js manifest.json styles.css
