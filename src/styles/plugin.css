@@ -14,8 +14,8 @@
 .cr-board {
 	--cr-light: #f0d9b5;
 	--cr-dark: #b58863;
-	--cr-active: rgba(56, 147, 232, 0.28);
-	--cr-hover: rgba(56, 147, 232, 0.12);
+	--cr-active: rgba(128, 128, 128, 0.3);
+	--cr-hover: rgba(128, 128, 128, 0.14);
 	--cr-good: #22ac38;
 	--cr-brilliant: #168226;
 	--cr-interesting: #2aa6a6;
@@ -320,18 +320,7 @@
 	bottom: auto;
 }
 
-.cr-gauge.is-empty .cr-gauge-fill {
-	height: 50% !important;
-}
 
-.cr-gauge-tick {
-	position: absolute;
-	left: 0;
-	right: 0;
-	height: 1px;
-	background: rgba(128, 128, 128, 0.35);
-	pointer-events: none;
-}
 
 .cr-gauge-text {
 	position: absolute;
@@ -456,6 +445,7 @@
 /* ---------------- Move list ---------------- */
 
 .cr-moves {
+	position: relative;
 	flex: 1;
 	overflow-y: auto;
 	display: grid;
@@ -646,10 +636,6 @@
 	color: #c33;
 }
 
-.cr-pvs.is-threat .cr-pv {
-	cursor: default;
-	color: #c33;
-}
 
 .cr-switch {
 	position: relative;
@@ -702,13 +688,19 @@
 .cr-pv {
 	display: flex;
 	gap: 6px;
-	padding: 1px 8px;
+	height: 19px;
+	align-items: center;
+	padding: 0 8px;
 	white-space: nowrap;
 	cursor: pointer;
 	color: var(--text-muted);
 }
 
-.cr-pv:hover {
+.cr-pv.is-empty {
+	cursor: default;
+}
+
+.cr-pv:not(.is-empty):hover {
 	background: var(--cr-hover);
 	color: var(--text-normal);
 }
@@ -764,6 +756,10 @@
 	margin: -3.5px 0 0 -3.5px;
 	border-radius: 50%;
 	pointer-events: none;
+}
+
+.cr-graph-cursor.is-hidden {
+	display: none;
 }
 
 .cr-graph-cursor {

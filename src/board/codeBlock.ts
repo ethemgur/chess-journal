@@ -43,6 +43,8 @@ class ChessGameBlock extends MarkdownRenderChild {
 	private observer?: IntersectionObserver;
 	private source: string;
 	private key?: string;
+	unloaded = false;
+	private retried = false;
 
 	constructor(private plugin: ChessReviewPlugin, source: string, el: HTMLElement, private ctx: MarkdownPostProcessorContext) {
 		super(el);
@@ -75,16 +77,18 @@ class ChessGameBlock extends MarkdownRenderChild {
 	}
 
 	onunload(): void {
+		this.unloaded = true;
 		this.observer?.disconnect();
 		const live = this.key ? liveBoards.get(this.key) : undefined;
-		if (this.view && live && live.owner === this) {
+		if (this.view && live && live.owner === this && live.view === this.view) {
 			// Keep the board alive briefly in case the re-rendered block adopts it.
 			const key = this.key as string;
 			live.destroyTimer = window.setTimeout(() => {
 				if (liveBoards.get(key) === live) liveBoards.delete(key);
 				live.view.destroy();
 			}, ADOPT_GRACE_MS);
-		} else if (this.view && !live) {
+		} else if (this.view && live?.view !== this.view) {
+			// Not the registered board (e.g. a second view of the same block): clean up now.
 			this.view.destroy();
 		}
 		this.view = undefined;
@@ -139,7 +143,19 @@ class ChessGameBlock extends MarkdownRenderChild {
 			setActive: (v) => plugin.setActiveBoard(v),
 		});
 		const live = liveBoards.get(key);
-		if (live && pgnHash(live.view.savedPgn()) === pgnHash(this.source)) {
+		// Only take over a board whose block has left the page (a re-render). Reading view
+		// and the editor can show the same block at once; each keeps its own board.
+		const ownerGone = !!live && (live.owner.unloaded || !live.owner.containerEl.isConnected);
+		const sameGame = !!live && pgnHash(live.view.savedPgn()) === pgnHash(this.source);
+		if (live && sameGame && !ownerGone && live.owner !== this && !this.retried) {
+			// The old block may be detached a moment after this one renders: check again shortly.
+			this.retried = true;
+			window.setTimeout(() => {
+				if (!this.unloaded && !this.view) this.renderBoard();
+			}, 60);
+			return;
+		}
+		if (live && ownerGone && sameGame) {
 			window.clearTimeout(live.destroyTimer);
 			live.destroyTimer = undefined;
 			live.owner = this;
@@ -147,15 +163,17 @@ class ChessGameBlock extends MarkdownRenderChild {
 			this.view.adopt(this.containerEl, host());
 			return;
 		}
-		if (live) {
+		if (live && ownerGone) {
+			// The old board is stale (the game text changed): replace it.
 			window.clearTimeout(live.destroyTimer);
-			if (live.owner !== this) live.view.destroy();
+			live.view.destroy();
 			liveBoards.delete(key);
 		}
 		try {
 			this.view = new BoardView(this.containerEl, this.source, host());
 			this.view.render();
-			liveBoards.set(key, { view: this.view, owner: this });
+			// Register unless another, still visible block already owns this key.
+			if (!liveBoards.has(key)) liveBoards.set(key, { view: this.view, owner: this });
 		} catch (e) {
 			this.renderError(e);
 		}

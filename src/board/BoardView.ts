@@ -115,12 +115,7 @@ export function nullMoveFen(fen: string): string | undefined {
 	return Chess.fromSetup(setup.value).isOk ? nf : undefined;
 }
 
-function positionFromFen(fen: string): Position | undefined {
-	const setup = parseFen(fen);
-	if (setup.isErr) return undefined;
-	const pos = Chess.fromSetup(setup.value);
-	return pos.isOk ? pos.value : undefined;
-}
+
 
 const fmtClock = (s: number) => {
 	const h = Math.floor(s / 3600);
@@ -162,6 +157,19 @@ export class BoardView {
 	private lastRightDown = 0;
 	private lastSaved: string;
 	private drawPending?: Key;
+	private lastGauge?: Score;
+	/** Move elements by path, so navigation only moves the highlight. */
+	private moveEls = new Map<string, HTMLElement>();
+	private activeMoveEl?: HTMLElement;
+	private ceval?: {
+		input: HTMLInputElement;
+		score: HTMLElement;
+		label: HTMLElement;
+		threat: HTMLElement;
+		pvs: HTMLElement;
+		rows: Array<{ el: HTMLElement; score: HTMLElement; moves: HTMLElement }>;
+		rowPvs: string[][];
+	};
 
 	constructor(private container: HTMLElement, pgn: string, private host: BoardHost) {
 		this.game = parseGame(pgn);
@@ -193,8 +201,6 @@ export class BoardView {
 		const boardRow = main.createDiv({ cls: "cr-board-row" });
 		this.els.evalBar = boardRow.createDiv({ cls: "cr-gauge" });
 		this.els.evalFill = this.els.evalBar.createDiv({ cls: "cr-gauge-fill" });
-		// Faint ticks every 12.5%, as on Lichess (no highlighted middle line).
-		for (let i = 1; i < 8; i++) this.els.evalBar.createDiv({ cls: "cr-gauge-tick" }).style.top = `${i * 12.5}%`;
 		this.els.evalText = this.els.evalBar.createDiv({ cls: "cr-gauge-text" });
 		const cgWrap = boardRow.createDiv({ cls: "cr-cg-wrap" });
 		this.els.cg = cgWrap.createDiv({ cls: "cr-cg" });
@@ -229,9 +235,10 @@ export class BoardView {
 
 		this.bindEvents();
 		this.renderDrawBar();
+		this.buildEngine();
 		void this.reloadAnalysis();
 		this.cleanups.push(this.host.onAnalysisChange(() => void this.reloadAnalysis()));
-		this.update();
+		this.update(true);
 		this.state.rendered = true;
 		if (this.state.hadFocus) {
 			this.state.hadFocus = false;
@@ -397,7 +404,8 @@ export class BoardView {
 	/* Update the UI for the current path                           */
 	/* ------------------------------------------------------------ */
 
-	private update(): void {
+	/** Refresh everything for the current path. `rebuild` after the game tree changed. */
+	private update(rebuild = false): void {
 		const info = infoAt(this.game, this.state.path);
 		const pos = info.pos;
 		// Highlight castling as king to g1/c1, as Lichess does.
@@ -413,12 +421,31 @@ export class BoardView {
 			selectable: { enabled: !this.state.drawMode },
 			drawable: { shapes: comment.shapes.map(toDrawShape) },
 		});
-		this.renderMoves();
+		if (rebuild || !this.moveEls.size) this.renderMoves();
+		else this.syncActiveMove();
+		this.scrollToActive(!rebuild);
 		this.updatePlayers();
-		this.renderGraph();
+		if (rebuild) this.renderGraph();
+		else this.updateGraphCursor();
 		this.restartInteractive();
 		this.renderEngine();
 		this.updateEvalBar();
+	}
+
+	private syncActiveMove(): void {
+		this.activeMoveEl?.removeClass("is-active");
+		this.activeMoveEl = this.moveEls.get(pathKey(this.state.path));
+		this.activeMoveEl?.addClass("is-active");
+	}
+
+	/** Keep the current move near the middle of the list, scrolling as you step through. */
+	private scrollToActive(smooth: boolean): void {
+		const list = this.els.moves;
+		if (!list) return;
+		const active = this.activeMoveEl;
+		const top = active ? Math.max(0, active.offsetTop - (list.clientHeight - active.offsetHeight) / 2) : 0;
+		if (Math.abs(list.scrollTop - top) < 2) return;
+		list.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
 	}
 
 	private updatePlayers(): void {
@@ -466,6 +493,8 @@ export class BoardView {
 		const el = this.els.moves;
 		const scroll = el.scrollTop;
 		el.empty();
+		this.moveEls.clear();
+		this.activeMoveEl = undefined;
 		const rootComment = commentOf(this.game.moves, this.game).text;
 		if (rootComment) el.createDiv({ cls: "cr-interrupt" }).createSpan({ cls: "cr-comment", text: rootComment });
 
@@ -511,11 +540,6 @@ export class BoardView {
 		if (result && result !== "*") el.createDiv({ cls: "cr-result", text: result });
 
 		el.scrollTop = scroll;
-		const active = el.querySelector(".cr-move.is-active") as HTMLElement | null;
-		if (active) {
-			const top = active.offsetTop - el.offsetTop;
-			if (top < el.scrollTop || top > el.scrollTop + el.clientHeight - 28) el.scrollTop = top - el.clientHeight / 2;
-		}
 	}
 
 	/** A side line, inline ("6. Bg5 Qb6 7. O-O"); its own branches nest below it. */
@@ -563,6 +587,8 @@ export class BoardView {
 	private moveEl(container: HTMLElement, node: MoveNode, path: Path, isMain: boolean, tag: "div" | "span"): HTMLElement {
 		const isActive = pathKey(path) === pathKey(this.state.path);
 		const m: HTMLElement = container.createEl(tag, { cls: "cr-move" + (isActive ? " is-active" : "") + (isMain ? "" : " is-side") });
+		this.moveEls.set(pathKey(path), m);
+		if (isActive) this.activeMoveEl = m;
 		m.createSpan({ cls: "cr-san", text: node.data.san });
 		for (const n of node.data.nags ?? []) {
 			m.createSpan({ cls: `cr-nag cr-nag-${NAG_CLASS[n] ?? "other"}`, text: nagGlyph(n) });
@@ -741,8 +767,11 @@ export class BoardView {
 	}
 
 	private afterChange(pgn: string, rerenderBoard: boolean): void {
-		if (rerenderBoard) this.update();
-		else this.renderMoves();
+		if (rerenderBoard) this.update(true);
+		else {
+			this.renderMoves();
+			this.syncActiveMove();
+		}
 		this.scheduleSave(pgn);
 	}
 
@@ -876,17 +905,18 @@ export class BoardView {
 	}
 
 	private updateEvalBar(): void {
-		const s = this.currentScore();
 		const bar = this.els.evalBar;
 		if (!bar) return;
-		bar.toggleClass("is-empty", !s);
+		const s = this.currentScore();
+		// While the engine is still thinking about a new position, keep the last value so the
+		// gauge glides from the previous evaluation instead of dropping to equal first.
+		if (!s && this.state.engineOn && this.lastGauge) return;
+		this.lastGauge = s;
 		const w = s ? winningChances(scoreToCp(s)) : 0;
-		const whitePct = 50 + 50 * w;
 		const whiteAtBottom = this.orientation() === "white";
-		this.els.evalFill.style.height = `${whitePct}%`;
+		this.els.evalFill.style.height = `${50 + 50 * w}%`;
 		this.els.evalFill.toggleClass("is-top", !whiteAtBottom);
 		bar.setAttribute("aria-label", s ? formatScore(s) : "No evaluation");
-		// The number sits at the end of the side that is better, as on the board's edge.
 		const text = this.els.evalText;
 		if (!s) {
 			text.setText("");
@@ -937,17 +967,23 @@ export class BoardView {
 			dot.style.left = `${pt[0]}%`;
 			dot.style.top = `${pt[1]}%`;
 		}
-		const cur = this.mainIndex();
-		if (cur >= 0) {
-			const c = el.createDiv({ cls: "cr-graph-cursor" });
-			c.style.left = `${(cur / n) * 100}%`;
-		}
+		this.els.graphCursor = el.createDiv({ cls: "cr-graph-cursor" });
+		this.updateGraphCursor();
 		el.onclick = (e: MouseEvent) => {
 			const r = el.getBoundingClientRect();
 			const idx = Math.round(((e.clientX - r.left) / r.width) * n);
 			const ml = mainline(this.game).length - 1;
 			this.goto(new Array(Math.max(0, Math.min(idx, ml))).fill(0));
 		};
+	}
+
+	private updateGraphCursor(): void {
+		const c = this.els.graphCursor;
+		const n = (this.analysis?.plies.length ?? 0) - 1;
+		if (!c || n < 1) return;
+		const cur = this.mainIndex();
+		c.toggleClass("is-hidden", cur < 0);
+		if (cur >= 0) c.style.left = `${(Math.min(cur, n) / n) * 100}%`;
 	}
 
 	private toggleEngine(on: boolean): void {
@@ -1007,67 +1043,94 @@ export class BoardView {
 		}, 150);
 	}
 
-	/** Compact engine panel: a switch, the evaluation, and up to 3 one-line PVs. */
-	private renderEngine(): void {
+	/** Build the engine strip once; renderEngine only updates it, so its height never jumps. */
+	private buildEngine(): void {
 		const el = this.els.engine;
-		if (!el) return;
 		el.empty();
-		const info = infoAt(this.game, this.state.path);
-		const threat = this.state.engineOn && this.state.threatOn;
-		const target = this.engineFen();
-		const rows: Array<{ score: Score; pv: string[]; depth: number }> = [];
-		let label = "";
-		if (this.state.engineOn && target && this.liveFen === target) {
-			for (const l of this.liveLines.slice(0, 3)) rows.push({ score: l.score, pv: l.pv, depth: l.depth });
-			if (rows[0]) label = `${threat ? "Threat · " : ""}depth ${rows[0].depth}`;
-		} else if (!this.state.engineOn) {
-			const c = this.cachedPly();
-			if (c && c.pv.length) {
-				rows.push({ score: c.score, pv: c.pv, depth: c.depth });
-				label = c.source === "cloud" ? `cloud · depth ${c.depth}` : `saved · depth ${c.depth}`;
-			}
-		}
-
 		const head = el.createDiv({ cls: "cr-ceval-head" });
 		const sw = head.createEl("label", { cls: "cr-switch", attr: { "aria-label": "Local engine" } });
 		const input = sw.createEl("input", { attr: { type: "checkbox" } });
-		input.checked = this.state.engineOn;
 		sw.createSpan({ cls: "cr-switch-track" });
 		input.addEventListener("change", () => this.toggleEngine(input.checked));
-		head.createSpan({ cls: "cr-ceval-score", text: rows[0] && !threat ? formatScore(rows[0].score) : "" });
+		const score = head.createSpan({ cls: "cr-ceval-score" });
+		const label = head.createSpan({ cls: "cr-ceval-label" });
+		const threat = head.createEl("button", { cls: "cr-threat clickable-icon", attr: { "aria-label": "Show threat (X)" } });
+		setIcon(threat, "crosshair");
+		threat.addEventListener("click", () => this.toggleThreat());
+		const pvs = el.createDiv({ cls: "cr-pvs" });
+		this.ceval = { input, score, label, threat, pvs, rows: [], rowPvs: [] };
+	}
+
+	/** Fixed number of PV rows: 3 with the engine on, 1 (saved line) with it off. */
+	private ensurePvRows(n: number): void {
+		const c = this.ceval;
+		if (!c || c.rows.length === n) return;
+		c.pvs.empty();
+		c.rows = [];
+		c.rowPvs = [];
+		for (let i = 0; i < n; i++) {
+			const el = c.pvs.createDiv({ cls: "cr-pv is-empty" });
+			const score = el.createSpan({ cls: "cr-pv-score" });
+			const moves = el.createSpan({ cls: "cr-pv-moves" });
+			el.addEventListener("click", () => {
+				const first = this.ceval?.rowPvs[i]?.[0];
+				if (first) this.playUci(first);
+			});
+			c.rows.push({ el, score, moves });
+			c.rowPvs.push([]);
+		}
+	}
+
+	/** Update the engine strip in place: switch, evaluation, PV rows and the arrow on the board. */
+	private renderEngine(): void {
+		const c = this.ceval;
+		if (!c) return;
+		const info = infoAt(this.game, this.state.path);
+		const threat = this.state.engineOn && this.state.threatOn;
+		const target = this.engineFen();
+		const lines: Array<{ score: Score; pv: string[]; depth: number }> = [];
+		let label = "";
+		if (this.state.engineOn && target && this.liveFen === target) {
+			for (const l of this.liveLines.slice(0, 3)) lines.push({ score: l.score, pv: l.pv, depth: l.depth });
+			if (lines[0]) label = `${threat ? "Threat · " : ""}depth ${lines[0].depth}`;
+		} else if (!this.state.engineOn) {
+			const p = this.cachedPly();
+			if (p && p.pv.length) {
+				lines.push({ score: p.score, pv: p.pv, depth: p.depth });
+				label = p.source === "cloud" ? `cloud · depth ${p.depth}` : `saved · depth ${p.depth}`;
+			}
+		}
 		let idle = "Stockfish 18";
-		if (this.state.engineOn) idle = info.pos.isEnd() ? "Game over" : threat && !target ? "No threat while in check" : threat ? "Threat · calculating…" : "Calculating…";
-		head.createSpan({ cls: "cr-ceval-label", text: label || idle });
-		const tb = head.createEl("button", {
-			cls: "cr-threat clickable-icon" + (this.state.threatOn ? " is-on" : ""),
-			attr: { "aria-label": "Show threat (X)" },
+		if (this.state.engineOn) {
+			idle = info.pos.isEnd() ? "Game over" : threat && !target ? "No threat while in check" : threat ? "Threat · calculating…" : "Calculating…";
+		}
+		c.input.checked = this.state.engineOn;
+		c.threat.toggleClass("is-on", this.state.threatOn);
+		// In threat mode the evaluation shown stays the position's own; the threat is only an arrow.
+		const gauge = this.currentScore();
+		c.score.setText(threat ? (gauge ? formatScore(gauge) : "") : lines[0] ? formatScore(lines[0].score) : "");
+		c.label.setText(label || idle);
+
+		this.ensurePvRows(this.state.engineOn ? 3 : 1);
+		c.rows.forEach((row, i) => {
+			const l = threat ? undefined : lines[i];
+			c.rowPvs[i] = l?.pv ?? [];
+			row.el.toggleClass("is-empty", !l);
+			row.el.setAttribute("aria-label", l ? "Play the first move" : "");
+			row.score.setText(l ? formatScore(l.score) : "");
+			row.moves.setText(l ? this.pvSan(info.pos, l.pv) : "");
 		});
-		setIcon(tb, "crosshair");
-		tb.addEventListener("click", () => this.toggleThreat());
 
 		const auto: DrawShape[] = [];
 		if (this.drawPending) auto.push({ orig: this.drawPending, brush: BRUSH[this.state.drawColour] });
-		if (rows.length) {
-			const pvs = el.createDiv({ cls: "cr-pvs" + (threat ? " is-threat" : "") });
-			const pvPos = threat && target ? positionFromFen(target) : info.pos;
-			for (const r of rows) {
-				const row = pvs.createDiv({ cls: "cr-pv", attr: threat ? {} : { title: "Play the first move" } });
-				row.createSpan({ cls: "cr-pv-score", text: formatScore(r.score) });
-				row.createSpan({ cls: "cr-pv-moves", text: pvPos ? this.pvSan(pvPos, r.pv) : r.pv.join(" ") });
-				// Threat lines start from a passed move, so they cannot be played here.
-				if (!threat) row.addEventListener("click", () => {
-					if (r.pv[0]) this.playUci(r.pv[0]);
-				});
-			}
-			const best = rows[0].pv[0];
-			if (best && best.length >= 4) {
-				auto.push({
-					orig: best.slice(0, 2) as Key,
-					dest: best.slice(2, 4) as Key,
-					brush: threat ? "paleRed" : "paleBlue",
-					modifiers: { lineWidth: ENGINE_ARROW_WIDTH },
-				});
-			}
+		const best = lines[0]?.pv[0];
+		if (best && best.length >= 4) {
+			auto.push({
+				orig: best.slice(0, 2) as Key,
+				dest: best.slice(2, 4) as Key,
+				brush: threat ? "paleRed" : "paleBlue",
+				modifiers: { lineWidth: ENGINE_ARROW_WIDTH },
+			});
 		}
 		this.cg?.setAutoShapes(auto);
 	}
