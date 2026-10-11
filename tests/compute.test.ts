@@ -5,20 +5,18 @@ import {
 	accuracyByTimeClass,
 	accuracyFigures,
 	accuracyRows,
-	accuracyTrend,
 	bandFigures,
 	chooseAccuracySite,
 	defaultFilters,
-	lowestAccuracy,
 	matchesFilters,
 	openingTable,
 	performanceOf,
+	ratingHistory,
 	periodRanges,
 	reviewQueue,
 	rowFromFrontmatter,
 	scoreFigures,
 	select,
-	siteJudgements,
 	siteTimeGroups,
 	timeFigures,
 	vsExpected,
@@ -112,16 +110,21 @@ describe("accuracy is never mixed across sites", () => {
 		expect(byResult.map((s) => [s.key, s.games.length, s.mine, s.opp])).toEqual([["win", 10, 80, 75], ["draw", 4, 70, 75], ["loss", 6, 60, 75]]);
 		expect(accuracyByTimeClass(acc).map((s) => s.key)).toEqual(["rapid"]);
 	});
-	it("trend needs 20 games; lowest accuracy first", () => {
-		const acc = accuracyRows(fixture(), "lichess");
-		expect(accuracyTrend(acc)).toHaveLength(1);
-		expect(accuracyTrend(acc)[0].accuracy).toBe(72);
-		expect(accuracyTrend(acc.slice(0, 19))).toHaveLength(0);
-		expect(lowestAccuracy(acc, 3).map((g) => g.myAccuracy)).toEqual([60, 60, 60]);
-	});
-	it("Lichess's own judgements per game", () => {
-		const rows = [game({ siteBlunders: 1, siteMistakes: 2, siteInaccuracies: 3 }), game({ siteBlunders: 0, siteMistakes: 0, siteInaccuracies: 1 }), game({})];
-		expect(siteJudgements(rows)).toEqual({ games: 2, inaccuracies: 2, mistakes: 1, blunders: 0.5 });
+});
+
+describe("rating history", () => {
+	it("one point per day: the pre-game rating of that day's last game", () => {
+		const rows = [
+			game({ date: "2026-09-01", playedAt: "2026-09-01T09:00:00Z", myRating: 2000 }),
+			game({ date: "2026-09-01", playedAt: "2026-09-01T10:00:00Z", myRating: 2008 }),
+			game({ date: "2026-09-01", playedAt: "2026-09-01T11:00:00Z", myRating: 2001 }),
+			game({ date: "2026-09-03", playedAt: "2026-09-03T11:00:00Z", myRating: 2010 }),
+			game({ site: "chesscom", date: "2026-09-01", myRating: 1900 }),
+			game({ site: "otb", date: "2026-09-01", myRating: 1800 }),
+		];
+		const h = ratingHistory(rows);
+		expect(h.map((x) => x.group.id)).toEqual(["lichess|rapid", "chesscom|rapid"]); // OTB is not plotted
+		expect(h[0].days.map((d) => [d.date, d.rating, d.games.length])).toEqual([["2026-09-01", 2001, 3], ["2026-09-03", 2010, 1]]);
 	});
 });
 

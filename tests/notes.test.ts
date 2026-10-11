@@ -158,7 +158,7 @@ describe("time control as the sites show it", () => {
 });
 
 describe("site accuracy and clock keys", () => {
-	it("Lichess: accuracy and judgements for both sides, clock stats from the PGN", () => {
+	it("Lichess: accuracy for both sides", () => {
 		const g = lichessGame("acc12345", Date.parse("2026-10-04T18:22:10Z"), {
 			players: {
 				white: { user: { name: "ethem", id: "ethem" }, rating: 2004, analysis: { inaccuracy: 3, mistake: 1, blunder: 0, acpl: 31, accuracy: 88.4 } },
@@ -168,7 +168,9 @@ describe("site accuracy and clock keys", () => {
 		const n = normaliseLichess(g as never, "ethem");
 		if (!n.ok) throw new Error("bad fixture");
 		const fm = syncFrontmatter(n.record);
-		expect(fm).toMatchObject({ "site-accuracy": 88.4, "opp-accuracy": 79.1, "site-inaccuracies": 3, "site-mistakes": 1, "site-blunders": 0, "site-acpl": 31 });
+		expect(fm).toMatchObject({ "site-accuracy": 88.4, "opp-accuracy": 79.1 });
+		// Lichess-only judgement counts are not stored (the dashboard uses what both sites provide).
+		expect(fm["site-mistakes"]).toBeUndefined();
 		// The helper's PGN has no TimeControl tag, so time trouble cannot be judged (real exports have it).
 		expect(fm["time-trouble"]).toBeUndefined();
 		expect(fm["first-10-seconds"]).toBeUndefined();
@@ -179,7 +181,6 @@ describe("site accuracy and clock keys", () => {
 		const fm = syncFrontmatter(n.record);
 		expect(fm["site-accuracy"]).toBeUndefined();
 		expect(fm["opp-accuracy"]).toBeUndefined();
-		expect(fm["site-blunders"]).toBeUndefined();
 	});
 	it("chess.com: accuracies for me and my opponent", () => {
 		const n = normaliseChesscom({

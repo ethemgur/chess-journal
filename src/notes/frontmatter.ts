@@ -29,10 +29,6 @@ export const SYNC_KEYS = [
 	"round",
 	"site-accuracy",
 	"opp-accuracy",
-	"site-inaccuracies",
-	"site-mistakes",
-	"site-blunders",
-	"site-acpl",
 	"time-trouble",
 	"first-10-seconds",
 ] as const;
@@ -112,10 +108,6 @@ export function syncFrontmatter(r: GameRecord): Frontmatter {
 		round: r.round ?? null,
 		"site-accuracy": r.sourceAccuracy?.[r.myColour] ?? null,
 		"opp-accuracy": r.sourceAccuracy?.[oppColour] ?? null,
-		"site-inaccuracies": r.sourceAnalysis?.[r.myColour]?.inaccuracy ?? null,
-		"site-mistakes": r.sourceAnalysis?.[r.myColour]?.mistake ?? null,
-		"site-blunders": r.sourceAnalysis?.[r.myColour]?.blunder ?? null,
-		"site-acpl": r.sourceAnalysis?.[r.myColour]?.acpl ?? null,
 		"time-trouble": r.clock?.timeTrouble ?? null,
 		"first-10-seconds": r.clock?.first10Seconds ?? null,
 	};

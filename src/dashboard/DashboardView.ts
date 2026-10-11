@@ -22,11 +22,9 @@ import {
 	accuracyByTimeClass,
 	accuracyFigures,
 	accuracyRows,
-	accuracyTrend,
 	bandFigures,
 	chooseAccuracySite,
 	defaultFilters,
-	lowestAccuracy,
 	openingTable,
 	performanceOf,
 	periodRanges,
@@ -34,7 +32,6 @@ import {
 	reviewQueue,
 	scoreFigures,
 	select,
-	siteJudgements,
 	siteTimeGroups,
 	timeFigures,
 	vsExpected,
@@ -165,10 +162,8 @@ export class DashboardView extends ItemView {
 		this.panelBands(panels, rows);
 		this.panelOpenings(panels, rows, site);
 		this.panelAccuracyByResult(panels, accRows, site);
-		this.panelAccuracyByTimeClass(panels, accRows, rows, site);
+		this.panelAccuracyByTimeClass(panels, accRows, site);
 		this.panelTime(panels, rows);
-		this.panelTrend(panels, accRows, site);
-		this.panelLowest(panels, accRows, site);
 		this.panelQueue(panels, rows);
 		this.contentEl.scrollTop = scroll;
 	}
@@ -450,7 +445,7 @@ export class DashboardView extends ItemView {
 	}
 
 	private panelRatingHistory(parent: HTMLElement, rows: GameRow[]): void {
-		const { body } = this.panel(parent, "Rating history", "Where is my rating going?");
+		const { body, foot } = this.panel(parent, "Rating history", "Where is my rating going?");
 		const hist = ratingHistory(rows);
 		if (!hist.length) {
 			body.createDiv({ cls: "cr-empty", text: "No rated online games in this selection." });
@@ -464,10 +459,22 @@ export class DashboardView extends ItemView {
 			shown.map((h, i) => ({
 				name: groupLabel(h.group),
 				color: colours[i],
-				points: h.points.map((g) => ({ x: dayNum(g.date), y: g.myRating as number, data: g, tip: `${g.date} · ${g.myRating} · vs ${g.opponent} (${g.oppRating ?? "?"}) · ${g.myResult}` })),
+				points: h.days.map((d) => {
+					const sc = scoreFigures(d.games);
+					const tip =
+						d.games.length === 1
+							? `${d.date} · ${d.rating} · vs ${d.games[0].opponent} (${d.games[0].oppRating ?? "?"}) · ${d.games[0].myResult}`
+							: `${d.date} · ${d.rating} · ${d.games.length} games (W ${sc.wins} · D ${sc.draws} · L ${sc.losses})`;
+					return { x: dayNum(d.date), y: d.rating, data: d, tip };
+				}),
 			})),
-			{ tip: this.tip, xFormat: fmtDay, onClick: (p) => this.host.openGame(p.data) },
+			{
+				tip: this.tip,
+				xFormat: fmtDay,
+				onClick: (p) => (p.data.games.length === 1 ? this.host.openGame(p.data.games[0]) : this.openList(`${groupLabel({ site: p.data.games[0].site, timeClass: p.data.games[0].timeClass })} · ${p.data.date}`, p.data.games)),
+			},
 		);
+		foot("One point per day: the rating before that day's last game. Click a day to see its games.");
 	}
 
 	private panelBands(parent: HTMLElement, rows: GameRow[]): void {
@@ -560,7 +567,7 @@ export class DashboardView extends ItemView {
 		foot(this.accuracyFoot(accRows.length, site));
 	}
 
-	private panelAccuracyByTimeClass(parent: HTMLElement, accRows: AccuracyRow[], rows: GameRow[], site: AccuracySite | undefined): void {
+	private panelAccuracyByTimeClass(parent: HTMLElement, accRows: AccuracyRow[], site: AccuracySite | undefined): void {
 		const { body, foot } = this.panel(parent, "Accuracy by time control", "Where do I play my best chess?");
 		const min = this.minGames();
 		const split = accuracyByTimeClass(accRows);
@@ -583,16 +590,7 @@ export class DashboardView extends ItemView {
 			);
 			this.legend(body, [["My accuracy", "var(--cr-c1)"], ["Opponents'", "var(--cr-c2)"]]);
 		}
-		const j = siteJudgements(rows);
-		if (j.games) {
-			const line = body.createDiv({ cls: "cr-figs" });
-			for (const [label, v] of [["inaccuracies", j.inaccuracies], ["mistakes", j.mistakes], ["blunders", j.blunders]] as Array<[string, number | undefined]>) {
-				const f = line.createDiv({ cls: "cr-fig" + (j.games >= min ? "" : " is-muted") });
-				f.createDiv({ cls: "cr-fig-value", text: j.games >= min && v !== undefined ? v.toFixed(2) : "–" });
-				f.createDiv({ cls: "cr-fig-label", text: `${label} per game` });
-			}
-			foot(`${this.accuracyFoot(accRows.length, site)} Per-game counts are Lichess's own judgements in ${j.games} analysed Lichess games.`);
-		} else foot(this.accuracyFoot(accRows.length, site));
+		foot(this.accuracyFoot(accRows.length, site));
 	}
 
 	private panelTime(parent: HTMLElement, rows: GameRow[]): void {
@@ -623,50 +621,6 @@ export class DashboardView extends ItemView {
 		foot(`Score % with and without time trouble (clock below 10% of base time or 30 s). ${t.withoutClocks} game${t.withoutClocks === 1 ? "" : "s"} without clocks not included.`);
 	}
 
-	private panelTrend(parent: HTMLElement, accRows: AccuracyRow[], site: AccuracySite | undefined): void {
-		const { body, foot } = this.panel(parent, "Trend", "Am I playing more accurately over time?");
-		const points = accuracyTrend(accRows);
-		if (!points.length) {
-			body.createDiv({ cls: "cr-empty", text: `Needs 20 or more games with site accuracy (${accRows.length} so far).` });
-			foot(this.accuracyFoot(accRows.length, site));
-			return;
-		}
-		lineChart(
-			body.createDiv({ cls: "cr-chart-box" }),
-			[
-				{ name: "Accuracy", color: "var(--cr-c1)", points: points.filter((p) => p.accuracy !== undefined).map((p) => ({ x: p.index, y: p.accuracy as number, data: p, tip: `20 games to ${p.date} · accuracy ${acc(p.accuracy)} · score ${pct(p.scorePct)}` })) },
-				{ name: "Score %", color: "var(--cr-c2)", axis: "right", thin: true, dots: false, points: points.filter((p) => p.scorePct !== undefined).map((p) => ({ x: p.index, y: p.scorePct as number, data: p, tip: `Score ${pct(p.scorePct)}` })) },
-			],
-			{ tip: this.tip, yFormat: (v) => v.toFixed(0), y2Format: (v) => `${Math.round(v)}%`, onClick: (p) => this.openList(`20 games ending ${p.data.date}`, p.data.games) },
-		);
-		foot(`Rolling 20-game accuracy (left) and score % (right, thin). ${this.accuracyFoot(accRows.length, site)}`);
-	}
-
-	private panelLowest(parent: HTMLElement, accRows: AccuracyRow[], site: AccuracySite | undefined): void {
-		const { body, foot } = this.panel(parent, "Least accurate games", "Which games did I play worst?");
-		const games = lowestAccuracy(accRows);
-		if (!games.length) {
-			body.createDiv({ cls: "cr-empty", text: "No games with site accuracy in this selection." });
-			foot(this.accuracyFoot(0, site));
-			return;
-		}
-		const wrap = body.createDiv({ cls: "cr-table-wrap" });
-		const t = wrap.createEl("table", { cls: "cr-table" });
-		const head = t.createEl("thead").createEl("tr");
-		for (const h of ["Date", "Opponent", "Result", "My accuracy", "Theirs"]) head.createEl("th", { text: h });
-		const tb = t.createEl("tbody");
-		for (const g of games) {
-			const tr = tb.createEl("tr", { cls: "is-clickable" });
-			tr.createEl("td", { text: g.date });
-			tr.createEl("td", { text: g.opponent });
-			tr.createEl("td", { cls: `cr-result is-${g.myResult}`, text: g.myResult });
-			tr.createEl("td", { text: acc(g.myAccuracy) });
-			tr.createEl("td", { text: acc(g.oppAccuracy) });
-			tr.addEventListener("click", () => this.host.openGame(g));
-		}
-		foot(this.accuracyFoot(accRows.length, site));
-	}
-
 	private panelQueue(parent: HTMLElement, rows: GameRow[]): void {
 		const { body, foot } = this.panel(parent, "Review queue", "Which games should I review next?");
 		const q = reviewQueue(rows);
@@ -689,7 +643,8 @@ export class DashboardView extends ItemView {
 			tr.createEl("td", { cls: `cr-result is-${g.myResult}`, text: g.myResult });
 			tr.createEl("td", { text: `${Math.round(g.myAccuracy)} – ${Math.round(g.oppAccuracy)}`, attr: { title: "My accuracy – my opponent's" } });
 			const td = tr.createEl("td");
-			const b = td.createEl("button", { cls: "cr-mark-btn", text: "Reviewed", attr: { "aria-label": "Mark reviewed" } });
+			const b = td.createEl("button", { cls: "cr-mark-btn clickable-icon", attr: { "aria-label": "Mark reviewed", title: "Mark reviewed" } });
+			setIcon(b, "check");
 			b.addEventListener("click", async (e) => {
 				e.stopPropagation();
 				b.disabled = true;
@@ -698,7 +653,7 @@ export class DashboardView extends ItemView {
 			});
 			tr.addEventListener("click", () => this.host.openGame(g));
 		}
-		foot("Ranked by how much less accurate I was than my opponent in the same game (points ÷ 10, up to 2), +0.5 if I lost.");
+		foot("Ranked by how much less accurate I was than my opponent in the same game (points ÷ 10, up to 2), +0.5 if I lost. ✓ marks a game reviewed.");
 	}
 
 	private openList(title: string, games: GameRow[]): void {

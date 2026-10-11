@@ -1383,9 +1383,14 @@
 }
 
 .cr-mark-btn {
-	padding: 1px 8px;
+	padding: 2px;
 	height: auto;
-	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.cr-mark-btn svg {
+	width: 16px;
+	height: 16px;
 }
 
 .cr-dash-tip {

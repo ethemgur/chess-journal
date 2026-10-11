@@ -1,7 +1,7 @@
 /**
  * Dashboard figures from the game index: filters, periods, summary cards and panels.
  * Uses only what the sites provide (results, ratings, clocks, Lichess/chess.com
- * accuracy, Lichess's move judgements). Accuracy is never averaged across sites,
+ * accuracy). Accuracy is never averaged across sites,
  * because Lichess and chess.com measure it on different scales.
  * Pure functions over GameRow[]; no Obsidian or DOM access.
  */
@@ -11,7 +11,6 @@ import {
 	BANDS,
 	Band,
 	MyResult,
-	TREND_WINDOW,
 	expectedScore,
 	lostOnTime,
 	mean,
@@ -52,10 +51,6 @@ export interface GameRow {
 	/** Site-provided accuracy (Lichess or chess.com scale, by `site`). */
 	myAccuracy?: number;
 	oppAccuracy?: number;
-	/** Lichess's own move judgements (Lichess games analysed on Lichess). */
-	siteMistakes?: number;
-	siteBlunders?: number;
-	siteInaccuracies?: number;
 	/** From the PGN clocks. */
 	timeTrouble?: boolean;
 	first10Seconds?: number;
@@ -100,9 +95,6 @@ export function rowFromFrontmatter(path: string, fm: Record<string, unknown>): G
 		termination: str(fm.termination),
 		myAccuracy: num(fm["site-accuracy"]),
 		oppAccuracy: num(fm["opp-accuracy"]),
-		siteMistakes: num(fm["site-mistakes"]),
-		siteBlunders: num(fm["site-blunders"]),
-		siteInaccuracies: num(fm["site-inaccuracies"]),
 		timeTrouble: typeof fm["time-trouble"] === "boolean" ? fm["time-trouble"] : undefined,
 		first10Seconds: num(fm["first-10-seconds"]),
 	};
@@ -285,12 +277,27 @@ export function bandFigures(rows: GameRow[]): BandFigures[] {
 	});
 }
 
-/** Rating history: per site × time class, games in date order with a pre-game rating. */
-export function ratingHistory(rows: GameRow[]): Array<{ group: Group; points: GameRow[] }> {
-	return siteTimeGroups(rows.filter((g) => g.myRating !== undefined && g.site !== "otb")).map((group) => ({
-		group,
-		points: [...group.games].sort((a, b) => (a.playedAt || a.date).localeCompare(b.playedAt || b.date)),
-	}));
+export interface RatingDay {
+	date: string;
+	/** Pre-game rating of the day's last game: one point per day, so several games a day do not stack. */
+	rating: number;
+	games: GameRow[];
+}
+
+/** Rating history: per site × time class, one point per day with games. */
+export function ratingHistory(rows: GameRow[]): Array<{ group: Group; days: RatingDay[] }> {
+	return siteTimeGroups(rows.filter((g) => g.myRating !== undefined && g.site !== "otb")).map((group) => {
+		const sorted = [...group.games].sort((a, b) => (a.playedAt || a.date).localeCompare(b.playedAt || b.date));
+		const days: RatingDay[] = [];
+		for (const g of sorted) {
+			const last = days[days.length - 1];
+			if (last && last.date === g.date) {
+				last.games.push(g);
+				last.rating = g.myRating as number;
+			} else days.push({ date: g.date, rating: g.myRating as number, games: [g] });
+		}
+		return { group, days };
+	});
 }
 
 /* ------------------------------------------------------------------ */
@@ -358,44 +365,6 @@ export function accuracyByTimeClass(rows: AccuracyRow[]): Array<AccuracySplit<Ti
 		const games = rows.filter((g) => g.timeClass === key);
 		return { key, games, mine: mean(games.map((g) => g.myAccuracy)), opp: mean(games.filter((g) => g.oppAccuracy !== undefined).map((g) => g.oppAccuracy as number)) };
 	}).filter((s) => s.games.length > 0);
-}
-
-export interface TrendPoint {
-	index: number;
-	date: string;
-	accuracy?: number;
-	scorePct?: number;
-	games: GameRow[];
-}
-
-/** Rolling 20-game accuracy and score %, oldest first. Empty below 20 games. */
-export function accuracyTrend(rows: AccuracyRow[], window = TREND_WINDOW): TrendPoint[] {
-	const sorted = [...rows].sort((a, b) => (a.playedAt || a.date).localeCompare(b.playedAt || b.date));
-	const out: TrendPoint[] = [];
-	for (let i = window - 1; i < sorted.length; i++) {
-		const w = sorted.slice(i - window + 1, i + 1);
-		out.push({ index: i, date: sorted[i].date, accuracy: mean(w.map((g) => g.myAccuracy)), scorePct: scoreFigures(w).pct, games: w });
-	}
-	return out;
-}
-
-/** My least accurate games (one site's scale). */
-export function lowestAccuracy(rows: AccuracyRow[], n = 10): AccuracyRow[] {
-	return [...rows].sort((a, b) => a.myAccuracy - b.myAccuracy).slice(0, n);
-}
-
-export interface SiteJudgements {
-	games: number;
-	inaccuracies?: number; // per game
-	mistakes?: number;
-	blunders?: number;
-}
-
-/** Lichess's own counts of my inaccuracies, mistakes and blunders, per game. */
-export function siteJudgements(rows: GameRow[]): SiteJudgements {
-	const judged = rows.filter((g) => g.site === "lichess" && g.siteBlunders !== undefined);
-	const per = (f: (g: GameRow) => number | undefined) => mean(judged.map((g) => f(g) ?? 0));
-	return { games: judged.length, inaccuracies: per((g) => g.siteInaccuracies), mistakes: per((g) => g.siteMistakes), blunders: per((g) => g.siteBlunders) };
 }
 
 /* ------------------------------------------------------------------ */

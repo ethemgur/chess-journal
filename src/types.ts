@@ -26,8 +26,6 @@ export interface GameRecord {
 	event?: string;
 	round?: string;
 	sourceAccuracy?: { white?: number; black?: number };
-	/** Lichess's own move judgements for games analysed on Lichess. */
-	sourceAnalysis?: { white?: SiteAnalysis; black?: SiteAnalysis };
 	/** From the PGN's clock times (no engine): my time trouble and time on my first 10 moves. */
 	clock?: ClockStats;
 	pgn: string;
@@ -35,12 +33,6 @@ export interface GameRecord {
 
 export type AnalysisStatus = "none" | "queued" | "running" | "done" | "failed";
 
-export interface SiteAnalysis {
-	inaccuracy?: number;
-	mistake?: number;
-	blunder?: number;
-	acpl?: number;
-}
 
 export interface ClockStats {
 	timeTrouble: boolean | null;
