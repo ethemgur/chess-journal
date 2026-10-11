@@ -1,5 +1,5 @@
 import { App, Menu, Modal, Notice, Platform, Plugin, Setting, normalizePath } from "obsidian";
-import { ChessReviewSettingTab, ChessReviewSettings, defaultSettings, engineLabel } from "./settings";
+import { ChessJournalSettingTab, ChessJournalSettings, defaultSettings, engineLabel } from "./settings";
 import type { AnalysisStatus, Colour, GameRecord } from "./types";
 import { NoteWriter, firstGameBlock } from "./notes/noteWriter";
 import { SyncEngine, SyncState, emptySummary, emptySyncState, formatSummary } from "./sync/syncEngine";
@@ -13,7 +13,7 @@ import { AnalysisCache } from "./engine/cache";
 import { AnalysisQueue, QueueState } from "./engine/queue";
 
 interface PluginData {
-	settings: ChessReviewSettings;
+	settings: ChessJournalSettings;
 	sync: SyncState;
 	deletedKeys: string[];
 	queue: QueueState;
@@ -21,7 +21,7 @@ interface PluginData {
 	editedPgn: Record<string, string>;
 }
 
-export default class ChessReviewPlugin extends Plugin {
+export default class ChessJournalPlugin extends Plugin {
 	data!: PluginData;
 	notes!: NoteWriter;
 	engine!: EngineService;
@@ -35,7 +35,7 @@ export default class ChessReviewPlugin extends Plugin {
 	private syncCancelled = false;
 	private activeBoard: BoardView | null = null;
 
-	settings!: ChessReviewSettings;
+	settings!: ChessJournalSettings;
 
 	async onload(): Promise<void> {
 		await this.loadPluginData();
@@ -87,10 +87,10 @@ export default class ChessReviewPlugin extends Plugin {
 				this.queueStatus = t;
 				this.renderStatus();
 			},
-			notify: (t) => new Notice(`Chess Review: ${t}`),
+			notify: (t) => new Notice(`Chess Journal: ${t}`),
 		});
 
-		this.addSettingTab(new ChessReviewSettingTab(this.app, this));
+		this.addSettingTab(new ChessJournalSettingTab(this.app, this));
 		registerChessGameBlock(this);
 		this.register(() => clearBlockStates());
 
@@ -99,7 +99,7 @@ export default class ChessReviewPlugin extends Plugin {
 		this.registerDomEvent(this.statusEl, "click", (e) => this.openStatusMenu(e));
 		this.renderStatus();
 
-		this.addRibbonIcon("crown", "Chess Review", (e) => {
+		this.addRibbonIcon("crown", "Chess Journal", (e) => {
 			const menu = new Menu();
 			menu.addItem((i) => i.setTitle("Sync all games").setIcon("refresh-cw").onClick(() => void this.runSync("all")));
 			menu.addItem((i) => i.setTitle("Import PGN file").setIcon("file-input").onClick(() => this.importPgn()));
@@ -213,7 +213,7 @@ export default class ChessReviewPlugin extends Plugin {
 			name: "Cancel analysis",
 			callback: async () => {
 				await this.queue.cancel();
-				new Notice("Chess Review: analysis queue emptied.");
+				new Notice("Chess Journal: analysis queue emptied.");
 			},
 		});
 		this.addCommand({
@@ -236,7 +236,7 @@ export default class ChessReviewPlugin extends Plugin {
 					if (f) pgn = firstGameBlock(await this.app.vault.read(f))?.trim();
 				}
 				if (!pgn) {
-					new Notice("Chess Review: no game on screen.");
+					new Notice("Chess Journal: no game on screen.");
 					return;
 				}
 				await navigator.clipboard.writeText(pgn);
@@ -285,7 +285,7 @@ export default class ChessReviewPlugin extends Plugin {
 
 	private async enqueue(keys: string[], front: boolean): Promise<void> {
 		if (!keys.length) {
-			new Notice("Chess Review: nothing to analyse.");
+			new Notice("Chess Journal: nothing to analyse.");
 			return;
 		}
 		if (!(await this.engine.installed())) {
@@ -293,16 +293,16 @@ export default class ChessReviewPlugin extends Plugin {
 		}
 		const n = await this.queue.enqueue(keys, front);
 		const extra = !Platform.isMobile || this.settings.analyseOnMobile ? "" : " Analysis runs on desktop (or turn on “Analyse on mobile”).";
-		new Notice(`Chess Review: ${n || keys.length} game${keys.length === 1 ? "" : "s"} queued for analysis.${extra}`);
+		new Notice(`Chess Journal: ${n || keys.length} game${keys.length === 1 ? "" : "s"} queued for analysis.${extra}`);
 	}
 
 	private async togglePause(): Promise<void> {
 		if (this.queue.paused) {
 			await this.queue.resume();
-			new Notice("Chess Review: analysis resumed.");
+			new Notice("Chess Journal: analysis resumed.");
 		} else {
 			await this.queue.pause();
-			new Notice("Chess Review: analysis paused.");
+			new Notice("Chess Journal: analysis paused.");
 		}
 	}
 
@@ -323,19 +323,19 @@ export default class ChessReviewPlugin extends Plugin {
 	async runSync(which: "all" | "lichess" | "chesscom"): Promise<void> {
 		const s = this.settings;
 		if (this.syncing) {
-			new Notice("Chess Review: a sync is already running.");
+			new Notice("Chess Journal: a sync is already running.");
 			return;
 		}
 		const doLichess = which !== "chesscom" && !!s.lichessUsername;
 		const doChesscom = which !== "lichess" && !!s.chesscomUsername;
 		if (!doLichess && !doChesscom) {
-			new Notice("Chess Review: set your Lichess or chess.com username in the settings first.");
+			new Notice("Chess Journal: set your Lichess or chess.com username in the settings first.");
 			return;
 		}
 		this.syncing = true;
 		this.syncCancelled = false;
 		const created: string[] = [];
-		new Notice("Chess Review: sync started.");
+		new Notice("Chess Journal: sync started.");
 		try {
 			this.notes.buildIndex();
 			const engine = new SyncEngine(
@@ -368,11 +368,11 @@ export default class ChessReviewPlugin extends Plugin {
 			if (doLichess) await engine.syncLichess(summary);
 			if (doChesscom && !summary.aborted && !summary.cancelled) await engine.syncChesscom(summary);
 			const notes = summary.notes.filter((n) => !n.startsWith("chess.com refreshes") || doChesscom);
-			new Notice(`Chess Review sync finished: ${formatSummary(summary)}` + (notes.length ? `\n${notes.slice(0, 4).join("\n")}` : ""), 10_000);
+			new Notice(`Chess Journal sync finished: ${formatSummary(summary)}` + (notes.length ? `\n${notes.slice(0, 4).join("\n")}` : ""), 10_000);
 			if (created.length && s.autoAnalyse) await this.queue.enqueue(created);
 		} catch (e) {
-			new Notice(`Chess Review sync failed: ${(e as Error).message}`, 10_000);
-			console.error("Chess Review sync:", e);
+			new Notice(`Chess Journal sync failed: ${(e as Error).message}`, 10_000);
+			console.error("Chess Journal sync:", e);
 		} finally {
 			this.syncing = false;
 			this.syncStatus = null;
@@ -440,15 +440,15 @@ export default class ChessReviewPlugin extends Plugin {
 		void (async () => {
 			if (!force && (await this.engine.installed())) return;
 			new EngineDownloadModal(this.app, this.engineFiles.source, async () => {
-				const n = new Notice("Chess Review: downloading engine…", 0);
+				const n = new Notice("Chess Journal: downloading engine…", 0);
 				try {
-					await this.engineFiles.download((m) => n.setMessage(`Chess Review: ${m}`));
-					n.setMessage("Chess Review: engine downloaded and verified.");
+					await this.engineFiles.download((m) => n.setMessage(`Chess Journal: ${m}`));
+					n.setMessage("Chess Journal: engine downloaded and verified.");
 					window.setTimeout(() => n.hide(), 4000);
 					this.engine.terminate();
 					this.queue.kick();
 				} catch (e) {
-					n.setMessage(`Chess Review: engine download failed. ${(e as Error).message}`);
+					n.setMessage(`Chess Journal: engine download failed. ${(e as Error).message}`);
 					window.setTimeout(() => n.hide(), 10_000);
 				}
 			}).open();

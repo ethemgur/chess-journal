@@ -5,7 +5,7 @@ import type { ChesscomGame } from "./normalise";
 export const CHESSCOM_HOST = "https://api.chess.com";
 
 export function chesscomUserAgent(version: string, username: string, email: string): string {
-	return `chess-review/${version} (username: ${username}; contact: ${email || "not given"})`;
+	return `chess-journal/${version} (username: ${username}; contact: ${email || "not given"})`;
 }
 
 export async function fetchArchiveList(http: Http, username: string, userAgent: string): Promise<string[]> {

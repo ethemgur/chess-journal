@@ -183,7 +183,7 @@ describe("chess.com sync", () => {
 		const { sink, engine } = setup(http, { lichessUsername: "", chesscomUsername: "ethem" });
 		const s = await engine().syncChesscom();
 		expect(http.calls.map((c) => c.url)).toEqual([ARCH, month("08"), month("09")]);
-		for (const c of http.calls) expect(c.headers?.["User-Agent"]).toBe("chess-review/0.1.0 (username: ethem; contact: me@example.com)");
+		for (const c of http.calls) expect(c.headers?.["User-Agent"]).toBe("chess-journal/0.1.0 (username: ethem; contact: me@example.com)");
 		expect(s.created).toBe(2);
 		expect(s.skippedVariant).toBe(1);
 		expect(s.skippedFilter).toBe(1);

@@ -17,7 +17,7 @@ import { parseFen } from "chessops/fen";
 import { ChildNode, CommentShape, CommentShapeColor, Node, PgnNodeData } from "chessops/pgn";
 import { makeSquare, parseSquare } from "chessops/util";
 import type { Colour } from "../types";
-import type { ChessReviewSettings } from "../settings";
+import type { ChessJournalSettings } from "../settings";
 import {
 	MOVE_NAGS,
 	POSITION_NAGS,
@@ -81,7 +81,7 @@ export const newBlockState = (): BlockState => ({
 
 export interface BoardHost {
 	app: App;
-	settings(): ChessReviewSettings;
+	settings(): ChessJournalSettings;
 	engine: EngineService;
 	gameKey?: string;
 	myColour?: Colour;
@@ -196,7 +196,7 @@ export class BoardView {
 		return this.host.state;
 	}
 
-	private get settings(): ChessReviewSettings {
+	private get settings(): ChessJournalSettings {
 		return this.host.settings();
 	}
 
@@ -872,7 +872,7 @@ export class BoardView {
 		} catch (e) {
 			// Keep the edit so a later attempt (or Copy PGN) can still recover it.
 			if (this.pendingSave === undefined) this.pendingSave = pgn;
-			new Notice(`Chess Review: could not save the game: ${(e as Error).message}`);
+			new Notice(`Chess Journal: could not save the game: ${(e as Error).message}`);
 		}
 	}
 
@@ -1168,7 +1168,7 @@ export class BoardView {
 				this.state.engineOn = false;
 				this.renderEngine();
 				this.host.askDownloadEngine();
-			} else new Notice(`Chess Review: engine error: ${(e as Error).message}`);
+			} else new Notice(`Chess Journal: engine error: ${(e as Error).message}`);
 		};
 		const startMain = () => {
 			if (gen !== this.engineGen) return;

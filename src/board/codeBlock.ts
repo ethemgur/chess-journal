@@ -1,6 +1,6 @@
 /** ```chess-game``` processor: renders a lazy BoardView per block and writes edits back into that block only. */
 import { MarkdownPostProcessorContext, MarkdownRenderChild, TFile } from "obsidian";
-import type ChessReviewPlugin from "../main";
+import type ChessJournalPlugin from "../main";
 import { CODE_LANG, findGameBlock, replaceBlockBody } from "../notes/noteWriter";
 import { PgnParseError, pgnHash } from "../pgn/tree";
 import { matchMyColour, pgnTags } from "../sources/normalise";
@@ -27,7 +27,7 @@ const ADOPT_GRACE_MS = 3000;
 /** How long a new block waits (in frames) for the block it replaces to leave the page. */
 const ADOPT_MAX_FRAMES = 30;
 
-export function registerChessGameBlock(plugin: ChessReviewPlugin): void {
+export function registerChessGameBlock(plugin: ChessJournalPlugin): void {
 	plugin.registerMarkdownCodeBlockProcessor(CODE_LANG, (source, el, ctx) => {
 		ctx.addChild(new ChessGameBlock(plugin, source, el, ctx));
 	});
@@ -56,7 +56,7 @@ class ChessGameBlock extends MarkdownRenderChild {
 	private key?: string;
 	unloaded = false;
 
-	constructor(private plugin: ChessReviewPlugin, source: string, el: HTMLElement, private ctx: MarkdownPostProcessorContext) {
+	constructor(private plugin: ChessJournalPlugin, source: string, el: HTMLElement, private ctx: MarkdownPostProcessorContext) {
 		super(el);
 		this.source = source;
 	}
@@ -236,11 +236,11 @@ class ChessGameBlock extends MarkdownRenderChild {
 	private renderError(e: unknown): void {
 		this.containerEl.empty();
 		const box = this.containerEl.createDiv({ cls: "cr-error" });
-		box.createDiv({ cls: "cr-error-title", text: "Chess Review could not read this game" });
+		box.createDiv({ cls: "cr-error-title", text: "Chess Journal could not read this game" });
 		const msg = e instanceof PgnParseError ? e.message : `Unexpected error: ${(e as Error)?.message ?? String(e)}`;
 		box.createDiv({ cls: "cr-error-message", text: msg });
 		if (this.source.trim()) box.createEl("pre", { cls: "cr-error-source", text: this.source.slice(0, 2000) });
-		if (!(e instanceof PgnParseError)) console.error("Chess Review:", e);
+		if (!(e instanceof PgnParseError)) console.error("Chess Journal:", e);
 	}
 
 	/**

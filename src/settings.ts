@@ -1,11 +1,11 @@
 import { App, Platform, PluginSettingTab, Setting } from "obsidian";
-import type ChessReviewPlugin from "./main";
+import type ChessJournalPlugin from "./main";
 import { TIME_CLASSES, TimeClass } from "./types";
 
 export type BudgetMode = "time" | "depth";
 export type Orientation = "mine" | "white" | "black";
 
-export interface ChessReviewSettings {
+export interface ChessJournalSettings {
 	// Accounts
 	lichessUsername: string;
 	lichessToken: string;
@@ -40,7 +40,7 @@ function monthsAgo(n: number): string {
 	return d.toISOString().slice(0, 10);
 }
 
-export function defaultSettings(): ChessReviewSettings {
+export function defaultSettings(): ChessJournalSettings {
 	return {
 		lichessUsername: "",
 		lichessToken: "",
@@ -68,7 +68,7 @@ export function defaultSettings(): ChessReviewSettings {
 }
 
 /** Engine label stored in each game's frontmatter, e.g. "stockfish-18-lite@1.5s". */
-export function engineLabel(s: ChessReviewSettings): string {
+export function engineLabel(s: ChessJournalSettings): string {
 	return s.budgetMode === "time"
 		? `stockfish-18-lite@${(s.movetimeMs / 1000).toString()}s`
 		: `stockfish-18-lite@d${s.depth}`;
@@ -77,8 +77,8 @@ export function engineLabel(s: ChessReviewSettings): string {
 export const PIECE_SETS: Record<string, string> = { cburnett: "Cburnett" };
 export const BOARD_THEMES: Record<string, string> = { brown: "Brown", blue: "Blue", green: "Green", grey: "Grey" };
 
-export class ChessReviewSettingTab extends PluginSettingTab {
-	constructor(app: App, private plugin: ChessReviewPlugin) {
+export class ChessJournalSettingTab extends PluginSettingTab {
+	constructor(app: App, private plugin: ChessJournalPlugin) {
 		super(app, plugin);
 	}
 
@@ -122,16 +122,28 @@ export class ChessReviewSettingTab extends PluginSettingTab {
 			.setName("File name template")
 			.setDesc("Tokens: {date} {white} {black} {site} {id} {result} {timeClass}")
 			.addText((t) => t.setValue(s.fileNameTemplate).onChange(async (v) => { s.fileNameTemplate = v || "{date} {white} vs {black} ({site})"; await save(); }));
-		const tc = new Setting(containerEl).setName("Time classes to import");
+		new Setting(containerEl)
+			.setName("Time classes to import")
+			.setDesc("Games of the speeds turned on below are imported.");
+		const speeds: Record<TimeClass, [string, string]> = {
+			bullet: ["Bullet", "Under 3 minutes"],
+			blitz: ["Blitz", "3 to 8 minutes"],
+			rapid: ["Rapid", "8 to 25 minutes"],
+			classical: ["Classical", "25 minutes and longer"],
+			daily: ["Daily", "Correspondence, days per move"],
+		};
 		for (const c of TIME_CLASSES) {
-			tc.addToggle((t) =>
-				t.setTooltip(c).setValue(s.timeClasses.includes(c)).onChange(async (on) => {
-					s.timeClasses = on ? [...new Set([...s.timeClasses, c])] : s.timeClasses.filter((x) => x !== c);
-					await save();
-				}),
-			);
+			new Setting(containerEl)
+				.setClass("cr-setting-sub")
+				.setName(speeds[c][0])
+				.setDesc(speeds[c][1])
+				.addToggle((t) =>
+					t.setValue(s.timeClasses.includes(c)).onChange(async (on) => {
+						s.timeClasses = on ? [...new Set([...s.timeClasses, c])] : s.timeClasses.filter((x) => x !== c);
+						await save();
+					}),
+				);
 		}
-		tc.setDesc("Bullet · blitz · rapid · classical · daily (toggles in that order).");
 		new Setting(containerEl)
 			.setName("Rated games only")
 			.addToggle((t) => t.setValue(s.ratedOnly).onChange(async (v) => { s.ratedOnly = v; await save(); }));

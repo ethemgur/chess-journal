@@ -13,8 +13,11 @@ import {
 	syncFrontmatter,
 } from "./frontmatter";
 
-export const SUMMARY_START = "<!-- chess-review:summary:start -->";
-export const SUMMARY_END = "<!-- chess-review:summary:end -->";
+export const SUMMARY_START = "<!-- chess-journal:summary:start -->";
+export const SUMMARY_END = "<!-- chess-journal:summary:end -->";
+/** Markers written by earlier versions; still recognised, and replaced on the next update. */
+const LEGACY_START = "<!-- chess-review:summary:start -->";
+const LEGACY_END = "<!-- chess-review:summary:end -->";
 export const CODE_LANG = "chess-game";
 
 /* ------------------------------------------------------------------ */
@@ -106,12 +109,15 @@ export function renderNote(r: GameRecord, fm: Frontmatter): string {
 	].join("\n");
 }
 
-/** Replace the text between the markers. Returns the content unchanged if the markers are missing. */
+/** Replace the text between the markers (current or legacy ones). Returns the content unchanged if they are missing. */
 export function replaceRegion(content: string, inner: string): string {
-	const s = content.indexOf(SUMMARY_START);
-	const e = content.indexOf(SUMMARY_END, s + 1);
-	if (s < 0 || e < 0) return content;
-	return content.slice(0, s + SUMMARY_START.length) + "\n" + inner + "\n" + content.slice(e);
+	for (const [start, end] of [[SUMMARY_START, SUMMARY_END], [LEGACY_START, LEGACY_END]]) {
+		const s = content.indexOf(start);
+		const e = content.indexOf(end, s + 1);
+		if (s < 0 || e < 0) continue;
+		return content.slice(0, s) + SUMMARY_START + "\n" + inner + "\n" + SUMMARY_END + content.slice(e + end.length);
+	}
+	return content;
 }
 
 /** Replace lines (lineStart, lineEnd) exclusive — the body of a fenced block — with `body`. */

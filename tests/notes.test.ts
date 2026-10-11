@@ -62,8 +62,8 @@ describe("note format", () => {
 		const note = renderNote(r, newNoteFrontmatter(r, "none")) + "\nMy notes here.\n";
 		const next = replaceRegion(note, "NEW");
 		expect(next).toContain(`${SUMMARY_START}\nNEW\n${SUMMARY_END}`);
-		expect(next.replace(/<!-- chess-review:summary:start -->[\s\S]*<!-- chess-review:summary:end -->/, "")).toBe(
-			note.replace(/<!-- chess-review:summary:start -->[\s\S]*<!-- chess-review:summary:end -->/, ""),
+		expect(next.replace(/<!-- chess-journal:summary:start -->[\s\S]*<!-- chess-journal:summary:end -->/, "")).toBe(
+			note.replace(/<!-- chess-journal:summary:start -->[\s\S]*<!-- chess-journal:summary:end -->/, ""),
 		);
 		const lines = note.split("\n");
 		const start = lines.findIndex((l) => l === "```chess-game");
@@ -128,5 +128,12 @@ describe("finding a game block by its text", () => {
 		const b = findGameBlock(note, "1. d4 d5 *")!;
 		const out = replaceBlockBody(note, b.lineStart, b.lineEnd, "1. d4 Nf6 *");
 		expect(out).toBe(note.replace("1. d4 d5 *", "1. d4 Nf6 *"));
+	});
+});
+
+describe("legacy summary markers", () => {
+	it("replaces old chess-review markers with chess-journal ones", () => {
+		const old = "x\n<!-- chess-review:summary:start -->\nold\n<!-- chess-review:summary:end -->\ny";
+		expect(replaceRegion(old, "NEW")).toBe("x\n<!-- chess-journal:summary:start -->\nNEW\n<!-- chess-journal:summary:end -->\ny");
 	});
 });

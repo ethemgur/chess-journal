@@ -1,4 +1,4 @@
-# Chess Review
+# Chess Journal
 
 An Obsidian plugin for one serious player reviewing their own games. Every finished game from Lichess, chess.com and over-the-board PGN files lands in your vault as **one reviewable note**: the full PGN with clock times, an interactive board you can annotate, and comparable offline Stockfish analysis.
 
@@ -14,7 +14,7 @@ Compatible with chess.com and Lichess. Not affiliated with either.
 ## Setup
 
 1. Install and enable the plugin.
-2. Open **Settings → Chess Review** and enter your Lichess and/or chess.com username. For chess.com, also enter a contact email; chess.com asks API clients to identify themselves.
+2. Open **Settings → Chess Journal** and enter your Lichess and/or chess.com username. For chess.com, also enter a contact email; chess.com asks API clients to identify themselves.
 3. Run **Sync all games** from the command palette or the ribbon menu.
 4. The first analysis asks to download the engine (about 7.3 MB, once). You can also run **Download engine** yourself.
 
@@ -36,10 +36,10 @@ reviewed: false
 ---
 # ethem vs opponent123, 2026-10-04
 
-<!-- chess-review:summary:start -->
+<!-- chess-journal:summary:start -->
 Rapid 10+5 · Lichess · 1-0 by resignation · [open game](https://lichess.org/abcd1234)
 My mistakes: 3 inaccuracies, 1 mistake, 0 blunders · ACPL 31
-<!-- chess-review:summary:end -->
+<!-- chess-journal:summary:end -->
 
 ```chess-game
 [Event "Rated rapid game"]
@@ -51,7 +51,7 @@ My mistakes: 3 inaccuracies, 1 mistake, 0 blunders · ACPL 31
 
 What the plugin will and won't touch:
 
-- It only rewrites its own frontmatter keys and the text between the `chess-review:summary` markers.
+- It only rewrites its own frontmatter keys and the text between the `chess-journal:summary` markers.
 - The `chess-game` block is only changed by you, through the board editor. Sync never overwrites a game's PGN.
 - `reviewed`, your own tags and everything else in the note belong to you.
 - If you delete a game note, sync won't re-create it. You can clear the list of deleted games in the settings.

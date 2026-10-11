@@ -1,4 +1,4 @@
-/* Chess Review — plugin styles. Board and move list follow Lichess's look;
+/* Chess Journal — plugin styles. Board and move list follow Lichess's look;
    no theme accent colour is used anywhere. */
 
 .cr-block {
@@ -834,6 +834,12 @@
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
 	word-break: break-all;
+}
+
+/* Settings: per-speed toggles sit indented under their heading row. */
+.setting-item.cr-setting-sub {
+	padding-left: 1.5em;
+	border-top: none;
 }
 
 .cr-status.is-hidden {
