@@ -16,6 +16,8 @@ import { GameIndex } from "./dashboard/gameIndex";
 import { RatingsCache } from "./dashboard/ratings";
 import { Filters, GameRow, defaultFilters } from "./dashboard/compute";
 import { chesscomUserAgent } from "./sources/chesscom";
+import { positionStats } from "./sources/material";
+import { POSITION_KEYS, applyOwnedKeys, positionFrontmatter } from "./notes/frontmatter";
 
 /** Workspace event that asks a game's board to jump to a main-line ply: (gameKey, ply). */
 export const GOTO_PLY_EVENT = "chess-review:goto-ply";
@@ -155,6 +157,9 @@ export default class ChessJournalPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => {
 			this.notes.buildIndex();
 			this.queue.kick();
+			// Older notes get their move statistics from their own PGN, once, in the background.
+			const t = window.setTimeout(() => void this.updatePositionStats(false), 5_000);
+			this.register(() => window.clearTimeout(t));
 			if (this.settings.syncOnStartup) {
 				const t = window.setTimeout(() => void this.runSync("all"), 30_000);
 				this.register(() => window.clearTimeout(t));
@@ -242,6 +247,50 @@ export default class ChessJournalPlugin extends Plugin {
 			window.setTimeout(() => fn(pending.ply), 0);
 		}
 		return () => this.gotoListeners.get(key)?.delete(fn);
+	}
+
+	private positionsRunning = false;
+
+	/**
+	 * Fill in move statistics (moves, material, imbalances, endgame) from each note's own
+	 * chess-game block: only notes without them, or every note when `all`. No network, no engine.
+	 */
+	async updatePositionStats(all: boolean): Promise<void> {
+		if (this.positionsRunning) return;
+		this.positionsRunning = true;
+		try {
+			const folder = normalizePath(this.settings.gamesFolder) + "/";
+			const files = this.app.vault.getMarkdownFiles().filter((f) => {
+				if (!f.path.startsWith(folder)) return false;
+				const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+				return !!fm && typeof fm["game-key"] === "string" && (all || fm.moves === undefined);
+			});
+			if (!files.length) {
+				if (all) new Notice("Move statistics are up to date.");
+				return;
+			}
+			const notice = files.length > 20 || all ? new Notice(`Reading moves of ${files.length} games…`, 0) : undefined;
+			let done = 0;
+			for (const file of files) {
+				if (this.syncCancelled) break;
+				const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+				const colour = fm?.["my-colour"] === "black" ? "black" : "white";
+				const pgn = firstGameBlock(await this.app.vault.cachedRead(file));
+				const stats = pgn ? positionStats(pgn, colour) : undefined;
+				if (stats) {
+					const wanted = positionFrontmatter(stats);
+					await this.app.fileManager.processFrontMatter(file, (f: Record<string, unknown>) => applyOwnedKeys(f, wanted, POSITION_KEYS));
+				}
+				if (++done % 25 === 0) {
+					notice?.setMessage(`Reading moves of games… ${done} / ${files.length}`);
+					await new Promise((r) => window.setTimeout(r, 0));
+				}
+			}
+			notice?.hide();
+			if (files.length > 20 || all) new Notice(`Move statistics added to ${done} games.`);
+		} finally {
+			this.positionsRunning = false;
+		}
 	}
 
 	/** The dashboard's only write: reviewed: true in that note's frontmatter. */
@@ -345,11 +394,16 @@ export default class ChessJournalPlugin extends Plugin {
 		this.addCommand({ id: "download-engine", name: "Download engine", callback: () => this.confirmEngineDownload(true) });
 		this.addCommand({ id: "open-dashboard", name: "Open performance dashboard", callback: () => void this.openDashboard() });
 		this.addCommand({
+			id: "update-move-stats",
+			name: "Update move statistics for all games",
+			callback: () => void this.updatePositionStats(true),
+		});
+		this.addCommand({
 			id: "refresh-site-data",
 			name: "Refresh accuracy and site data for all games",
 			callback: async () => {
 				// Re-fetch everything since "Import games since": notes only get their site-owned keys
-				// (accuracy, Lichess judgements, clocks) updated; nothing else is touched.
+				// (accuracy, clocks, move statistics) updated; nothing else is touched.
 				this.data.sync = emptySyncState();
 				await this.savePluginData();
 				await this.runSync("all");

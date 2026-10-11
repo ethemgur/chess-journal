@@ -1,6 +1,7 @@
 /** Every source -> one GameRecord. Pure functions, no vault or network access. */
 import type { Colour, GameRecord, MyResult, Result, TimeClass } from "../types";
 import { clockStats } from "./clock";
+import { positionStats } from "./material";
 import { mainline, parseGame } from "../pgn/tree";
 
 /* ------------------------------------------------------------------ */
@@ -140,6 +141,7 @@ export function normaliseLichess(g: LichessGame, username: string): Normalised {
 			event: tags.get("Event"),
 			sourceAccuracy: acc.white !== undefined || acc.black !== undefined ? acc : undefined,
 			clock: clockStats(g.pgn, myColour, timeClass === "daily"),
+			position: positionStats(g.pgn, myColour),
 			pgn: g.pgn.trim(),
 		},
 	};
@@ -241,6 +243,7 @@ export function normaliseChesscom(g: ChesscomGame, username: string): Normalised
 			opening: openingFromEcoUrl(ecoUrl),
 			sourceAccuracy: acc && (acc.white !== undefined || acc.black !== undefined) ? acc : undefined,
 			clock: clockStats(g.pgn, myColour, tc === "daily"),
+			position: positionStats(g.pgn, myColour),
 			pgn: g.pgn.trim(),
 		},
 	};
@@ -340,6 +343,7 @@ export async function normaliseOtb(pgn: string, myColour: Colour): Promise<Norma
 			event: known(tags.get("Event")),
 			round: known(tags.get("Round")),
 			clock: clockStats(pgn, myColour, false),
+			position: positionStats(pgn, myColour),
 			pgn: pgn.trim(),
 		},
 	};

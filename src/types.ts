@@ -28,6 +28,8 @@ export interface GameRecord {
 	sourceAccuracy?: { white?: number; black?: number };
 	/** From the PGN's clock times (no engine): my time trouble and time on my first 10 moves. */
 	clock?: ClockStats;
+	/** From the PGN's moves (piece counting, no engine). */
+	position?: PositionStats;
 	pgn: string;
 }
 
@@ -37,4 +39,15 @@ export type AnalysisStatus = "none" | "queued" | "running" | "done" | "failed";
 export interface ClockStats {
 	timeTrouble: boolean | null;
 	first10Seconds: number | null;
+}
+
+export interface PositionStats {
+	moves: number;
+	/** My lowest and highest lasting material balance (pawn = 1 … queen = 9). */
+	materialLow: number;
+	materialHigh: number;
+	/** Lasting imbalances, from my side (see IMBALANCE_KINDS). */
+	imbalances: string[];
+	/** An endgame was reached (ENDGAME_PIECES or fewer pieces left). */
+	endgame: boolean;
 }

@@ -1413,3 +1413,49 @@
 .cr-dash-modal {
 	width: min(900px, 95vw);
 }
+
+.cr-panel-lead {
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	margin-bottom: 6px;
+}
+
+.cr-result-table td:not(.cr-td-name),
+.cr-result-table th:not(:first-child) {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+.cr-result-table td.is-clickable {
+	cursor: pointer;
+	text-decoration: underline dotted var(--text-faint);
+	text-underline-offset: 3px;
+}
+
+.cr-result-table td.is-clickable:hover {
+	color: var(--text-accent);
+}
+
+.cr-figs.cr-figs-3 {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 8px 12px;
+}
+
+.cr-fig-sub {
+	color: var(--text-faint);
+}
+
+.cr-result-table td.cr-td-name {
+	white-space: normal;
+}
+
+.is-narrow .cr-result-table th,
+.is-narrow .cr-result-table td {
+	padding-left: 4px;
+	padding-right: 4px;
+}
+
+.is-narrow .cr-result-table .cr-col-extra {
+	display: none;
+}

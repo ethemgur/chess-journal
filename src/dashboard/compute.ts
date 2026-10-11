@@ -1,7 +1,7 @@
 /**
  * Dashboard figures from the game index: filters, periods, summary cards and panels.
  * Uses only what the sites provide (results, ratings, clocks, Lichess/chess.com
- * accuracy). Accuracy is never averaged across sites,
+ * accuracy) and piece counts from the moves. Accuracy is never averaged across sites,
  * because Lichess and chess.com measure it on different scales.
  * Pure functions over GameRow[]; no Obsidian or DOM access.
  */
@@ -10,6 +10,9 @@ import { TIME_CLASSES } from "../types";
 import {
 	BANDS,
 	Band,
+	IMBALANCE_KINDS,
+	Imbalance,
+	MATERIAL_SWING,
 	MyResult,
 	expectedScore,
 	lostOnTime,
@@ -54,6 +57,12 @@ export interface GameRow {
 	/** From the PGN clocks. */
 	timeTrouble?: boolean;
 	first10Seconds?: number;
+	/** From the moves (piece counting); undefined until the note has them. */
+	moves?: number;
+	materialLow?: number;
+	materialHigh?: number;
+	imbalances?: Imbalance[];
+	endgame?: boolean;
 }
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -97,7 +106,17 @@ export function rowFromFrontmatter(path: string, fm: Record<string, unknown>): G
 		oppAccuracy: num(fm["opp-accuracy"]),
 		timeTrouble: typeof fm["time-trouble"] === "boolean" ? fm["time-trouble"] : undefined,
 		first10Seconds: num(fm["first-10-seconds"]),
+		moves: num(fm.moves),
+		materialLow: num(fm["material-low"]),
+		materialHigh: num(fm["material-high"]),
+		imbalances: num(fm.moves) === undefined ? undefined : imbalanceList(fm.imbalances),
+		endgame: typeof fm.endgame === "boolean" ? fm.endgame : undefined,
 	};
+}
+
+function imbalanceList(v: unknown): Imbalance[] {
+	const list = Array.isArray(v) ? v.map(String) : typeof v === "string" ? v.split(/[,\s]+/) : [];
+	return IMBALANCE_KINDS.filter((k) => list.includes(k));
 }
 
 /* ------------------------------------------------------------------ */
@@ -453,6 +472,85 @@ export function timeFigures(rows: GameRow[]): TimeFigures {
 		scoreWithout: scoreFigures(calm).pct,
 		medianFirst10: median(withClocks.map((g) => g.first10Seconds).filter((v): v is number => v !== undefined)),
 		lostOnTime: rows.filter((g) => lostOnTime(g.myResult, g.termination)),
+	};
+}
+
+/* ------------------------------------------------------------------ */
+/* Material: comebacks, imbalances, endgames (piece counting)           */
+/* ------------------------------------------------------------------ */
+
+export interface ResultSplit {
+	games: GameRow[];
+	wins: GameRow[];
+	draws: GameRow[];
+	losses: GameRow[];
+	scorePct?: number;
+}
+
+function split(games: GameRow[]): ResultSplit {
+	return {
+		games,
+		wins: games.filter((g) => g.myResult === "win"),
+		draws: games.filter((g) => g.myResult === "draw"),
+		losses: games.filter((g) => g.myResult === "loss"),
+		scorePct: scoreFigures(games).pct,
+	};
+}
+
+export interface MaterialFigures {
+	withMoves: GameRow[];
+	withoutMoves: number;
+	/** Down at least MATERIAL_SWING for three moves or more. */
+	down: ResultSplit;
+	/** Up at least MATERIAL_SWING for three moves or more. */
+	up: ResultSplit;
+	/** Down, then won or drew. */
+	turnedAround: GameRow[];
+	/** Up, then drew or lost. */
+	letSlip: GameRow[];
+}
+
+export function materialFigures(rows: GameRow[]): MaterialFigures {
+	const withMoves = rows.filter((g) => g.moves !== undefined);
+	const down = split(withMoves.filter((g) => (g.materialLow ?? 0) <= -MATERIAL_SWING));
+	const up = split(withMoves.filter((g) => (g.materialHigh ?? 0) >= MATERIAL_SWING));
+	return {
+		withMoves,
+		withoutMoves: rows.length - withMoves.length,
+		down,
+		up,
+		turnedAround: [...down.wins, ...down.draws],
+		letSlip: [...up.draws, ...up.losses],
+	};
+}
+
+export interface ImbalanceRow extends ResultSplit {
+	kind: Imbalance;
+	vsExpected?: number; // actual − expected points
+}
+
+/** Score in games with each lasting imbalance; kinds with no games are left out. */
+export function imbalanceTable(rows: GameRow[]): ImbalanceRow[] {
+	const withMoves = rows.filter((g) => g.imbalances !== undefined);
+	return IMBALANCE_KINDS.map((kind) => {
+		const games = withMoves.filter((g) => g.imbalances?.includes(kind));
+		return { kind, ...split(games), vsExpected: vsExpected(games).diff };
+	}).filter((r) => r.games.length);
+}
+
+export interface EndgameFigures {
+	reached: ResultSplit;
+	notReached: ResultSplit;
+	reachedPct?: number;
+}
+
+export function endgameFigures(rows: GameRow[]): EndgameFigures {
+	const known = rows.filter((g) => g.endgame !== undefined);
+	const reached = known.filter((g) => g.endgame);
+	return {
+		reached: split(reached),
+		notReached: split(known.filter((g) => !g.endgame)),
+		reachedPct: known.length ? (reached.length / known.length) * 100 : undefined,
 	};
 }
 

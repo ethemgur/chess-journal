@@ -18,6 +18,7 @@ import {
 	GameRow,
 	OpeningRow,
 	Period,
+	ResultSplit,
 	accuracyByResult,
 	accuracyByTimeClass,
 	accuracyFigures,
@@ -25,6 +26,9 @@ import {
 	bandFigures,
 	chooseAccuracySite,
 	defaultFilters,
+	endgameFigures,
+	imbalanceTable,
+	materialFigures,
 	openingTable,
 	performanceOf,
 	periodRanges,
@@ -36,7 +40,7 @@ import {
 	timeFigures,
 	vsExpected,
 } from "./compute";
-import { BANDS, BAND_LABEL, Band, MyResult } from "./definitions";
+import { BANDS, BAND_LABEL, Band, IMBALANCE_LABEL, MATERIAL_SWING, MyResult } from "./definitions";
 import { Tooltip, barChart, lineChart } from "./charts";
 
 export const VIEW_TYPE_DASHBOARD = "chess-journal-dashboard";
@@ -161,6 +165,9 @@ export class DashboardView extends ItemView {
 		this.panelRatingHistory(panels, rows);
 		this.panelBands(panels, rows);
 		this.panelOpenings(panels, rows, site);
+		this.panelComebacks(panels, rows);
+		this.panelImbalances(panels, rows);
+		this.panelEndgames(panels, rows);
 		this.panelAccuracyByResult(panels, accRows, site);
 		this.panelAccuracyByTimeClass(panels, accRows, site);
 		this.panelTime(panels, rows);
@@ -544,6 +551,103 @@ export class DashboardView extends ItemView {
 			if (r.variations && this.expanded.has(`${r.colour}|${r.family}`)) for (const v of r.variations) addRow(v, true);
 		}
 		foot("A poor score with good accuracy points to the opposition you meet in that opening; poor accuracy points to your play. Click a row to filter.");
+	}
+
+	/** Table of games split by result; each count opens its games. */
+	private resultTable(body: HTMLElement, first: string, rows: Array<{ label: string; split: ResultSplit; extra?: string }>, extraHead?: string): void {
+		const min = this.minGames();
+		const wrap = body.createDiv({ cls: "cr-table-wrap" });
+		const t = wrap.createEl("table", { cls: "cr-table cr-result-table" });
+		const head = t.createEl("thead").createEl("tr");
+		for (const h of [first, "Games", "W", "D", "L", "Score"]) head.createEl("th", { text: h });
+		if (extraHead) head.createEl("th", { text: extraHead, cls: "cr-col-extra" });
+		const tb = t.createEl("tbody");
+		for (const r of rows) {
+			const s = r.split;
+			const enough = s.games.length >= min;
+			const tr = tb.createEl("tr", { cls: enough ? "" : "is-muted" });
+			tr.createEl("td", { cls: "cr-td-name", text: r.label });
+			const cell = (games: GameRow[], what: string) => {
+				const td = tr.createEl("td", { text: String(games.length), cls: games.length ? "is-clickable" : "" });
+				if (games.length)
+					td.addEventListener("click", (e) => {
+						e.stopPropagation();
+						this.openList(`${r.label} · ${what}`, games);
+					});
+			};
+			cell(s.games, "all");
+			cell(s.wins, "won");
+			cell(s.draws, "drawn");
+			cell(s.losses, "lost");
+			tr.createEl("td", { text: enough && s.scorePct !== undefined ? `${Math.round(s.scorePct)}%` : "–" });
+			if (extraHead) tr.createEl("td", { text: enough ? r.extra ?? "–" : "–", cls: "cr-col-extra" });
+		}
+	}
+
+	private movesFoot(withoutMoves: number): string {
+		return withoutMoves ? ` ${withoutMoves} game${withoutMoves === 1 ? "" : "s"} not read yet.` : "";
+	}
+
+	private panelComebacks(parent: HTMLElement, rows: GameRow[]): void {
+		const { body, foot } = this.panel(parent, "Comebacks and collapses", "Do I save bad positions and convert good ones?");
+		const m = materialFigures(rows);
+		if (!m.withMoves.length) {
+			body.createDiv({ cls: "cr-empty", text: "No games with move statistics yet." });
+			foot(this.movesFoot(m.withoutMoves).trim());
+			return;
+		}
+		const figs = body.createDiv({ cls: "cr-figs cr-figs-3" });
+		const fig = (value: string, label: string, sub: string, games: GameRow[]) => {
+			const f = figs.createDiv({ cls: "cr-fig" + (games.length ? " is-clickable" : "") });
+			f.createDiv({ cls: "cr-fig-value", text: value });
+			f.createDiv({ cls: "cr-fig-label", text: label });
+			f.createDiv({ cls: "cr-fig-label cr-fig-sub", text: sub });
+			if (games.length) f.addEventListener("click", () => this.openList(cap(label), games));
+		};
+		fig(String(m.turnedAround.length), "turned around", `${m.down.wins.length} W · ${m.down.draws.length} D`, m.turnedAround);
+		fig(String(m.letSlip.length), "let slip", `${m.up.draws.length} D · ${m.up.losses.length} L`, m.letSlip);
+		fig(m.up.games.length ? `${Math.round((m.up.wins.length / m.up.games.length) * 100)}%` : "–", "won when ahead", `${m.up.wins.length} of ${m.up.games.length}`, m.up.wins);
+		this.resultTable(body, "Material", [
+			{ label: `Was down ${MATERIAL_SWING}+`, split: m.down },
+			{ label: `Was up ${MATERIAL_SWING}+`, split: m.up },
+		]);
+		foot(
+			`Counted from the pieces on the board (pawn 1, knight and bishop 3, rook 5, queen 9), no engine: down or up at least ${MATERIAL_SWING} points for three moves or more. Sacrifices count too, and a position can be lost without being down material.${this.movesFoot(m.withoutMoves)}`,
+		);
+	}
+
+	private panelImbalances(parent: HTMLElement, rows: GameRow[]): void {
+		const { body, foot } = this.panel(parent, "Material imbalances", "How do I score with unbalanced material?");
+		const table = imbalanceTable(rows);
+		const withMoves = rows.filter((g) => g.imbalances !== undefined);
+		const any = new Set(table.flatMap((r) => r.games.map((g) => g.key))).size;
+		if (!table.length) body.createDiv({ cls: "cr-empty", text: withMoves.length ? "No lasting imbalances in this selection." : "No games with move statistics yet." });
+		else {
+			body.createDiv({ cls: "cr-panel-lead", text: `${any} of ${withMoves.length} games (${pct((any / withMoves.length) * 100)}) had at least one.` });
+			this.resultTable(
+				body,
+				"Imbalance",
+				table.map((r) => ({ label: IMBALANCE_LABEL[r.kind], split: r, extra: r.vsExpected !== undefined ? signed(r.vsExpected) : undefined })),
+				"Vs expected",
+			);
+		}
+		foot(`Named from my side ("queen vs pieces": I had the queen). An imbalance counts when it lasts three moves or more.${this.movesFoot(rows.length - withMoves.length)}`);
+	}
+
+	private panelEndgames(parent: HTMLElement, rows: GameRow[]): void {
+		const { body, foot } = this.panel(parent, "Endgames", "Do I score better in long games or short ones?");
+		const e = endgameFigures(rows);
+		const known = e.reached.games.length + e.notReached.games.length;
+		if (!known) {
+			body.createDiv({ cls: "cr-empty", text: "No games with move statistics yet." });
+			return;
+		}
+		body.createDiv({ cls: "cr-panel-lead", text: `${pct(e.reachedPct)} of games reached an endgame.` });
+		this.resultTable(body, "Game", [
+			{ label: "Reached an endgame", split: e.reached },
+			{ label: "Decided before", split: e.notReached },
+		]);
+		foot(`Endgame: six or fewer pieces left (not counting kings and pawns), both sides together.${this.movesFoot(rows.length - known)}`);
 	}
 
 	private panelAccuracyByResult(parent: HTMLElement, accRows: AccuracyRow[], site: AccuracySite | undefined): void {

@@ -1,7 +1,7 @@
 /**
  * Every dashboard term, implemented once. The dashboard uses only what the sites
- * provide (results, ratings, clocks, and Lichess/chess.com accuracy); nothing is
- * evaluated by an engine on this device. Unit-tested in tests/definitions.test.ts.
+ * provide (results, ratings, clocks, and Lichess/chess.com accuracy) and piece
+ * counts from the moves; nothing is evaluated by an engine on this device. Unit-tested in tests/definitions.test.ts.
  */
 
 /* ------------------------------------------------------------------ */
@@ -13,8 +13,6 @@ export const TIME_TROUBLE_SHARE = 0.1;
 export const TIME_TROUBLE_MIN_SEC = 30;
 /** Performance rating cap (± from average opponent rating). */
 export const PERFORMANCE_CAP = 800;
-/** Rolling window for the trend panel. */
-export const TREND_WINDOW = 20;
 /** Review priority: accuracy gap (opponent − me) per this many points counts 1; capped; plus a loss bonus. */
 export const PRIORITY_GAP_UNIT = 10;
 export const PRIORITY_GAP_CAP = 2;
@@ -144,3 +142,58 @@ export function reviewPriority(myAccuracy: number, oppAccuracy: number, result: 
 	const gap = Math.max(0, Math.min(PRIORITY_GAP_CAP, (oppAccuracy - myAccuracy) / PRIORITY_GAP_UNIT));
 	return gap + (result === "loss" ? PRIORITY_LOST : 0);
 }
+
+/* ------------------------------------------------------------------ */
+/* Material (piece counting, no engine)                                */
+/* ------------------------------------------------------------------ */
+
+/** Pawn 1, knight and bishop 3, rook 5, queen 9. */
+export const PIECE_VALUE = { p: 1, n: 3, r: 5, q: 9 } as const;
+/** A material state counts when it holds for this many positions in a row (three moves each). */
+export const LASTING_PLIES = 6;
+/** Down (or up) at least this many points: a minor piece. */
+export const MATERIAL_SWING = 3;
+/** Endgame: at most this many pieces (not kings or pawns) left on the board, both sides together. */
+export const ENDGAME_PIECES = 6;
+
+/** Imbalances, always from my side: "rook-vs-minor" means I had the rook. */
+export type Imbalance =
+	| "rook-vs-minor"
+	| "minor-vs-rook"
+	| "rook-vs-two-minors"
+	| "two-minors-vs-rook"
+	| "queen-vs-pieces"
+	| "pieces-vs-queen"
+	| "minor-vs-pawns"
+	| "pawns-vs-minor"
+	| "bishop-pair"
+	| "opp-bishop-pair"
+	| "opposite-bishops";
+
+export const IMBALANCE_KINDS: Imbalance[] = [
+	"rook-vs-minor",
+	"minor-vs-rook",
+	"rook-vs-two-minors",
+	"two-minors-vs-rook",
+	"queen-vs-pieces",
+	"pieces-vs-queen",
+	"minor-vs-pawns",
+	"pawns-vs-minor",
+	"bishop-pair",
+	"opp-bishop-pair",
+	"opposite-bishops",
+];
+
+export const IMBALANCE_LABEL: Record<Imbalance, string> = {
+	"rook-vs-minor": "Up the exchange",
+	"minor-vs-rook": "Down the exchange",
+	"rook-vs-two-minors": "Rook vs two minors",
+	"two-minors-vs-rook": "Two minors vs rook",
+	"queen-vs-pieces": "Queen vs pieces",
+	"pieces-vs-queen": "Pieces vs queen",
+	"minor-vs-pawns": "Piece vs pawns",
+	"pawns-vs-minor": "Pawns vs piece",
+	"bishop-pair": "Bishop pair: mine",
+	"opp-bishop-pair": "Bishop pair: theirs",
+	"opposite-bishops": "Opposite bishops",
+};

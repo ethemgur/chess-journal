@@ -59,7 +59,7 @@ What the plugin will and won't touch:
 
 ### Frontmatter keys (schema 1)
 
-`cr-schema`, `game-key`, `site`, `url`, `played-at`, `date`, `white`, `black`, `my-colour`, `my-rating`, `opp-rating`, `result`, `my-result`, `termination`, `time-control`, `time-class`, `rated`, `eco`, `opening`, `event`, `round`, `site-accuracy`, `opp-accuracy`, `time-trouble`, `first-10-seconds`, `analysis-status`, `engine`, `my-acpl`, `my-inaccuracies`, `my-mistakes`, `my-blunders`, `opp-mistakes`, `opp-blunders`, `tags` (shared), `reviewed` (yours).
+`cr-schema`, `game-key`, `site`, `url`, `played-at`, `date`, `white`, `black`, `my-colour`, `my-rating`, `opp-rating`, `result`, `my-result`, `termination`, `time-control`, `time-class`, `rated`, `eco`, `opening`, `event`, `round`, `site-accuracy`, `opp-accuracy`, `time-trouble`, `first-10-seconds`, `moves`, `material-low`, `material-high`, `imbalances`, `endgame`, `analysis-status`, `engine`, `my-acpl`, `my-inaccuracies`, `my-mistakes`, `my-blunders`, `opp-mistakes`, `opp-blunders`, `tags` (shared), `reviewed` (yours).
 
 `time-control` is written as the sites show it: minutes + increment in seconds (`3+2`, `10+5`, `½+0`), or `3 days` for daily games. The game's PGN keeps its original `TimeControl` tag in seconds. `time-class` is the site's own label (bullet, blitz, rapid, classical, daily).
 
@@ -104,12 +104,20 @@ Off by default: the dashboard uses the sites' accuracy instead. Turn on **Analys
 
 ## Performance dashboard
 
-**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes. It uses only what Lichess and chess.com provide: results, ratings, clock times and the sites' own accuracy figures. No game is evaluated on your device, so it works the same on a phone.
+**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes. It uses only what Lichess and chess.com provide (results, ratings, clock times and the sites' own accuracy figures) plus piece counts from the moves. No game is evaluated by an engine on your device, so it works the same on a phone.
 
 - **Rating history:** one point per day per site and time class (the rating before that day's last game).
 - **Rating cards:** live ratings from Lichess and chess.com per time class, never merged across sites, with the change over the period. Offline, the latest rating from your notes is shown, marked "from games".
 - **Stat cards:** score, score vs expected (from pre-game ratings), performance rating (per site and time class), accuracy, accuracy vs your opponents in the same games, and time trouble. Each compares with the previous period of the same length.
-- **Panels:** rating history · against stronger and weaker · openings (score, vs expected, accuracy) · accuracy by result · accuracy by time control · time management · review queue.
+- **Panels:** rating history · against stronger and weaker · openings (score, vs expected, accuracy) · comebacks and collapses · material imbalances · endgames · accuracy by result · accuracy by time control · time management · review queue.
+
+**Material statistics** come from counting the pieces after every move (pawn 1, knight and bishop 3, rook 5, queen 9); a state counts when it lasts three moves or more, so the middle of an exchange is ignored.
+
+- **Comebacks and collapses:** games where you were down at least 3 points and still won or drew ("turned around"), and games where you were up at least 3 points and drew or lost ("let slip"). Sacrifices count too, and a position can be lost without being down material, so these are a lower bound rather than an engine verdict.
+- **Material imbalances**, named from your side: up or down the exchange, rook vs two minors, queen vs pieces, piece vs pawns, bishop pair (yours or theirs), opposite-coloured bishops. Score and score vs expected for each.
+- **Endgames:** games that reached six or fewer pieces (kings and pawns not counted), and your score in them and in games decided before.
+
+Notes from earlier versions get these keys from their own `chess-game` block in the background shortly after Obsidian starts. **Update move statistics for all games** re-reads every note, for example after you changed a main line in the board editor.
 
 **Accuracy comes from the sites:** Lichess gives it for games analysed on Lichess, chess.com for games with a Game Review. Lichess and chess.com measure accuracy on different scales, so accuracy figures always use one site at a time ("Accuracy from" in the filter bar) and are never averaged across sites. The review queue ranks unreviewed games by how much less accurate you were than your opponent in the same game, +0.5 if you lost; **Mark reviewed** sets `reviewed: true` in that note, the dashboard's only write.
 
@@ -117,7 +125,7 @@ Accuracy that a site adds later (for example after you request an analysis on Li
 
 ## Commands
 
-Open performance dashboard · Refresh accuracy and site data for all games · Sync all games · Sync Lichess games · Sync chess.com games · Cancel sync · Import PGN file · Analyse this game · Analyse all unanalysed games · Re-analyse with current settings · Pause / resume analysis · Cancel analysis · Open game on site · Copy PGN · Download engine
+Open performance dashboard · Refresh accuracy and site data for all games · Update move statistics for all games · Sync all games · Sync Lichess games · Sync chess.com games · Cancel sync · Import PGN file · Analyse this game · Analyse all unanalysed games · Re-analyse with current settings · Pause / resume analysis · Cancel analysis · Open game on site · Copy PGN · Download engine
 
 ## Network use and privacy
 

@@ -1,8 +1,11 @@
 /** Frontmatter schema version 1. Keys are kebab-case and flat for Dataview and Bases. */
-import type { AnalysisStatus, GameRecord } from "../types";
+import type { AnalysisStatus, GameRecord, PositionStats } from "../types";
 
 export const CR_SCHEMA = 1;
 export const GAME_TAG = "chess-game";
+
+/** Keys read from the game's moves (piece counting). Also filled in for older notes from their own PGN. */
+export const POSITION_KEYS = ["moves", "material-low", "material-high", "imbalances", "endgame"] as const;
 
 /** Keys the plugin may rewrite on sync. */
 export const SYNC_KEYS = [
@@ -31,6 +34,7 @@ export const SYNC_KEYS = [
 	"opp-accuracy",
 	"time-trouble",
 	"first-10-seconds",
+	...POSITION_KEYS,
 ] as const;
 
 /** Keys the plugin may rewrite after analysis. */
@@ -110,8 +114,17 @@ export function syncFrontmatter(r: GameRecord): Frontmatter {
 		"opp-accuracy": r.sourceAccuracy?.[oppColour] ?? null,
 		"time-trouble": r.clock?.timeTrouble ?? null,
 		"first-10-seconds": r.clock?.first10Seconds ?? null,
+		...positionFrontmatter(r.position),
 	};
 	for (const k of Object.keys(fm)) if (fm[k] === null) delete fm[k];
+	return fm;
+}
+
+/** Position keys; imbalances is left out when there are none. */
+export function positionFrontmatter(p?: PositionStats): Frontmatter {
+	if (!p) return {};
+	const fm: Frontmatter = { moves: p.moves, "material-low": p.materialLow, "material-high": p.materialHigh, endgame: p.endgame };
+	if (p.imbalances.length) fm.imbalances = p.imbalances;
 	return fm;
 }
 
