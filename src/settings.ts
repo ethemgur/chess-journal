@@ -124,13 +124,13 @@ export class ChessJournalSettingTab extends PluginSettingTab {
 			.addText((t) => t.setValue(s.fileNameTemplate).onChange(async (v) => { s.fileNameTemplate = v || "{date} {white} vs {black} ({site})"; await save(); }));
 		new Setting(containerEl)
 			.setName("Time classes to import")
-			.setDesc("Games of the speeds turned on below are imported.");
+			.setDesc("Uses each site's own label for the game's speed.");
 		const speeds: Record<TimeClass, [string, string]> = {
-			bullet: ["Bullet", "Under 3 minutes"],
-			blitz: ["Blitz", "3 to 8 minutes"],
-			rapid: ["Rapid", "8 to 25 minutes"],
-			classical: ["Classical", "25 minutes and longer"],
-			daily: ["Daily", "Correspondence, days per move"],
+			bullet: ["Bullet", "Lichess (incl. UltraBullet) and chess.com"],
+			blitz: ["Blitz", "Lichess and chess.com"],
+			rapid: ["Rapid", "Lichess and chess.com"],
+			classical: ["Classical", "Lichess only"],
+			daily: ["Daily", "chess.com Daily and Lichess Correspondence"],
 		};
 		for (const c of TIME_CLASSES) {
 			new Setting(containerEl)

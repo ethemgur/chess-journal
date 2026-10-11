@@ -5,6 +5,7 @@ import type { UpsertResult } from "../sync/syncEngine";
 import {
 	ANALYSIS_KEYS,
 	Frontmatter,
+	displayTimeControl,
 	SYNC_KEYS,
 	applyOwnedKeys,
 	changedKeys,
@@ -34,28 +35,13 @@ export function safeInline(s: unknown): string {
 		.trim();
 }
 
-/** "600+5" -> "10+5", "1/86400" -> "1 day/move". */
-export function formatTimeControl(tc?: unknown): string {
-	if (typeof tc !== "string" || !tc) return "";
-	const daily = /^1\/(\d+)$/.exec(tc);
-	if (daily) {
-		const days = Math.round(Number(daily[1]) / 86400);
-		return `${days} day${days === 1 ? "" : "s"}/move`;
-	}
-	const m = /^(\d+)(?:\+(\d+))?$/.exec(tc);
-	if (!m) return tc;
-	const base = Number(m[1]);
-	const mins = base >= 60 ? String(Math.round((base / 60) * 100) / 100) : `${base}s`;
-	return `${mins}+${m[2] ?? "0"}`;
-}
-
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Text between the summary markers, rendered from frontmatter values. */
 export function renderSummary(fm: Record<string, unknown>): string {
 	const first: string[] = [];
-	const tc = [fm["time-class"] ? cap(String(fm["time-class"])) : "", formatTimeControl(fm["time-control"])]
+	const tc = [fm["time-class"] ? cap(String(fm["time-class"])) : "", displayTimeControl(fm["time-control"])]
 		.filter(Boolean)
 		.join(" ");
 	if (tc) first.push(tc);

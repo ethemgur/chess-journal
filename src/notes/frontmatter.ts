@@ -42,6 +42,37 @@ export const ANALYSIS_KEYS = [
 	"opp-blunders",
 ] as const;
 
+const FRACTIONS: Record<number, string> = { 15: "¼", 30: "½", 45: "¾" };
+
+/**
+ * Time control as the sites show it: PGN "180+2" -> "3+2", "600" -> "10+0",
+ * "30+0" -> "½+0", "1/259200" -> "3 days". Other forms (e.g. FIDE "40/5400:1800+30") are kept.
+ */
+export function formatTimeControl(tc?: string): string | undefined {
+	if (!tc || tc === "-" || tc === "?") return undefined;
+	const daily = /^1\/(\d+)$/.exec(tc);
+	if (daily) {
+		const days = Math.max(1, Math.round(Number(daily[1]) / 86400));
+		return `${days} day${days === 1 ? "" : "s"}`;
+	}
+	const m = /^(\d+)(?:\+(\d+))?$/.exec(tc);
+	if (!m) return tc;
+	const base = Number(m[1]);
+	const minutes = base >= 60 ? String(Math.round((base / 60) * 100) / 100) : FRACTIONS[base] ?? `${base}s`;
+	return `${minutes}+${m[2] ?? "0"}`;
+}
+
+/**
+ * For notes written before time controls were stored in the readable form: convert
+ * values that are clearly PGN seconds ("1/N", or a base of 180 or more).
+ */
+export function displayTimeControl(v: unknown): string {
+	if (typeof v !== "string" || !v) return "";
+	const m = /^(\d+)(?:\+\d+)?$/.exec(v);
+	if (/^1\/\d+$/.test(v) || (m && Number(m[1]) >= 180)) return formatTimeControl(v) ?? v;
+	return v;
+}
+
 export type FmValue = string | number | boolean | string[] | null;
 export type Frontmatter = Record<string, FmValue>;
 
@@ -64,7 +95,7 @@ export function syncFrontmatter(r: GameRecord): Frontmatter {
 		result: r.result,
 		"my-result": r.myResult,
 		termination: r.termination ?? null,
-		"time-control": r.timeControl ?? null,
+		"time-control": formatTimeControl(r.timeControl) ?? null,
 		"time-class": r.timeClass ?? null,
 		rated: r.rated ?? null,
 		eco: r.eco ?? null,

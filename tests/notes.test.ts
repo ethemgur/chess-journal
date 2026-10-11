@@ -6,13 +6,12 @@ import {
 	fileNameFor,
 	findGameBlock,
 	firstGameBlock,
-	formatTimeControl,
 	renderNote,
 	renderSummary,
 	replaceBlockBody,
 	replaceRegion,
 } from "../src/notes/noteWriter";
-import { applyOwnedKeys, changedKeys, newNoteFrontmatter, SYNC_KEYS, syncFrontmatter } from "../src/notes/frontmatter";
+import { applyOwnedKeys, changedKeys, displayTimeControl, formatTimeControl, newNoteFrontmatter, SYNC_KEYS, syncFrontmatter } from "../src/notes/frontmatter";
 import { normaliseLichess } from "../src/sources/normalise";
 import { lichessGame } from "./helpers";
 import type { GameRecord } from "../src/types";
@@ -42,7 +41,7 @@ describe("note format", () => {
 		const s = renderSummary({
 			site: "chesscom",
 			"time-class": "rapid",
-			"time-control": "600+5",
+			"time-control": "10+5",
 			result: "0-1",
 			termination: "resignation",
 			url: "https://www.chess.com/game/live/1",
@@ -53,8 +52,8 @@ describe("note format", () => {
 			"my-acpl": 31,
 		});
 		expect(s).toBe("Rapid 10+5 · chess.com · 0-1 by resignation · [open game](https://www.chess.com/game/live/1)\nMy mistakes: 3 inaccuracies, 1 mistake, 0 blunders · ACPL 31");
-		expect(formatTimeControl("1/259200")).toBe("3 days/move");
-		expect(formatTimeControl("180+2")).toBe("3+2");
+		expect(displayTimeControl("600+5")).toBe("10+5"); // written by an older version
+		expect(displayTimeControl("3+2")).toBe("3+2");
 	});
 
 	it("replaces only the summary region and only a block's body", () => {
@@ -135,5 +134,25 @@ describe("legacy summary markers", () => {
 	it("replaces old chess-review markers with chess-journal ones", () => {
 		const old = "x\n<!-- chess-review:summary:start -->\nold\n<!-- chess-review:summary:end -->\ny";
 		expect(replaceRegion(old, "NEW")).toBe("x\n<!-- chess-journal:summary:start -->\nNEW\n<!-- chess-journal:summary:end -->\ny");
+	});
+});
+
+describe("time control as the sites show it", () => {
+	it("converts PGN seconds to minutes+increment", () => {
+		expect(formatTimeControl("180")).toBe("3+0");
+		expect(formatTimeControl("180+2")).toBe("3+2");
+		expect(formatTimeControl("300+3")).toBe("5+3");
+		expect(formatTimeControl("600+5")).toBe("10+5");
+		expect(formatTimeControl("5400+30")).toBe("90+30");
+		expect(formatTimeControl("90+0")).toBe("1.5+0");
+		expect(formatTimeControl("30+0")).toBe("½+0");
+		expect(formatTimeControl("15")).toBe("¼+0");
+		expect(formatTimeControl("1/86400")).toBe("1 day");
+		expect(formatTimeControl("1/259200")).toBe("3 days");
+		expect(formatTimeControl("40/5400:1800+30")).toBe("40/5400:1800+30");
+		expect(formatTimeControl("-")).toBeUndefined();
+	});
+	it("is what new notes store", () => {
+		expect(syncFrontmatter(record())["time-control"]).toBe("10+5");
 	});
 });
