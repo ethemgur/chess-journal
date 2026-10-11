@@ -1377,6 +1377,11 @@
 	height: 14px;
 }
 
+.cr-td-sub {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
 .cr-mark-btn {
 	padding: 1px 8px;
 	height: auto;

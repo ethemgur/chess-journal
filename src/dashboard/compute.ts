@@ -1,20 +1,20 @@
 /**
- * Dashboard figures from the game index: filters, periods, summary cards and the
- * nine panels. Pure functions over GameRow[]; no Obsidian or DOM access.
+ * Dashboard figures from the game index: filters, periods, summary cards and panels.
+ * Uses only what the sites provide (results, ratings, clocks, Lichess/chess.com
+ * accuracy, Lichess's move judgements). Accuracy is never averaged across sites,
+ * because Lichess and chess.com measure it on different scales.
+ * Pure functions over GameRow[]; no Obsidian or DOM access.
  */
 import type { Site, TimeClass } from "../types";
-import type { GameSummary, SummaryMark } from "./summary";
+import { TIME_CLASSES } from "../types";
 import {
 	BANDS,
 	Band,
 	MyResult,
-	PHASES,
-	Phase,
 	TREND_WINDOW,
-	WEAKEST_PHASE_MIN_MOVES,
-	errorRate,
 	expectedScore,
-	isError,
+	lostOnTime,
+	mean,
 	median,
 	openingFamily,
 	performanceRating,
@@ -26,6 +26,8 @@ import {
 /* ------------------------------------------------------------------ */
 /* Index rows                                                          */
 /* ------------------------------------------------------------------ */
+
+export type AccuracySite = "lichess" | "chesscom";
 
 export interface GameRow {
 	key: string;
@@ -45,18 +47,26 @@ export interface GameRow {
 	eco?: string;
 	family: string;
 	opponent: string;
-	engine?: string;
-	analysisStatus?: string;
 	reviewed: boolean;
 	termination?: string;
-	summary?: GameSummary;
+	/** Site-provided accuracy (Lichess or chess.com scale, by `site`). */
+	myAccuracy?: number;
+	oppAccuracy?: number;
+	/** Lichess's own move judgements (Lichess games analysed on Lichess). */
+	siteMistakes?: number;
+	siteBlunders?: number;
+	siteInaccuracies?: number;
+	/** From the PGN clocks. */
+	timeTrouble?: boolean;
+	first10Seconds?: number;
 }
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
-const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : undefined);
+const num = (v: unknown) =>
+	typeof v === "number" && Number.isFinite(v) ? v : typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : undefined;
 
 /** Build a row from game-note frontmatter; undefined when the note is not a usable game. */
-export function rowFromFrontmatter(path: string, fm: Record<string, unknown>, summary?: GameSummary): GameRow | undefined {
+export function rowFromFrontmatter(path: string, fm: Record<string, unknown>): GameRow | undefined {
 	const key = str(fm["game-key"]);
 	const site = str(fm.site) as Site | undefined;
 	const myColour = fm["my-colour"] === "black" ? "black" : fm["my-colour"] === "white" ? "white" : undefined;
@@ -68,7 +78,6 @@ export function rowFromFrontmatter(path: string, fm: Record<string, unknown>, su
 	const eco = str(fm.eco);
 	const white = str(fm.white) ?? "?";
 	const black = str(fm.black) ?? "?";
-	const tc = str(fm["time-class"]);
 	return {
 		key,
 		path,
@@ -81,17 +90,21 @@ export function rowFromFrontmatter(path: string, fm: Record<string, unknown>, su
 		result: str(fm.result) ?? "*",
 		myRating: num(fm["my-rating"]),
 		oppRating: num(fm["opp-rating"]),
-		timeClass: tc as TimeClass | undefined,
+		timeClass: str(fm["time-class"]) as TimeClass | undefined,
 		rated: typeof fm.rated === "boolean" ? fm.rated : undefined,
 		opening,
 		eco,
 		family: openingFamily(opening, eco),
 		opponent: myColour === "white" ? black : white,
-		engine: str(fm.engine),
-		analysisStatus: str(fm["analysis-status"]),
 		reviewed: fm.reviewed === true,
 		termination: str(fm.termination),
-		summary,
+		myAccuracy: num(fm["site-accuracy"]),
+		oppAccuracy: num(fm["opp-accuracy"]),
+		siteMistakes: num(fm["site-mistakes"]),
+		siteBlunders: num(fm["site-blunders"]),
+		siteInaccuracies: num(fm["site-inaccuracies"]),
+		timeTrouble: typeof fm["time-trouble"] === "boolean" ? fm["time-trouble"] : undefined,
+		first10Seconds: num(fm["first-10-seconds"]),
 	};
 }
 
@@ -111,6 +124,8 @@ export interface Filters {
 	ratedOnly: boolean;
 	bands: Band[]; // empty = all
 	families: string[]; // empty = all
+	/** Which site's accuracy the accuracy figures use; undefined = the one with most games. */
+	accuracySite?: AccuracySite;
 }
 
 export const defaultFilters = (period: Period = "3m"): Filters => ({
@@ -159,7 +174,7 @@ export function periodRanges(f: Filters, today: string): { current: DateRange; p
 		default: {
 			const months = f.period === "3m" ? 3 : 12;
 			const from = addDays(addMonths(today, -months), 1);
-			return { current: { from, to: today }, previous: { from: addDays(addMonths(from, -months), 0), to: addDays(from, -1) } };
+			return { current: { from, to: today }, previous: { from: addMonths(from, -months), to: addDays(from, -1) } };
 		}
 	}
 }
@@ -187,16 +202,8 @@ export function select(rows: GameRow[], f: Filters, range: DateRange): GameRow[]
 	return rows.filter((g) => inRange(g.date, range) && matchesFilters(g, f));
 }
 
-/** Games analysed with the current engine setting (the only ones engine panels use). */
-export function engineRows(rows: GameRow[], engineLabel: string): Array<GameRow & { summary: GameSummary }> {
-	return rows.filter(
-		(g): g is GameRow & { summary: GameSummary } =>
-			g.analysisStatus === "done" && g.engine === engineLabel && !!g.summary && g.summary.engine === engineLabel,
-	);
-}
-
 /* ------------------------------------------------------------------ */
-/* Summary cards                                                        */
+/* Results and ratings                                                  */
 /* ------------------------------------------------------------------ */
 
 export interface ScoreFigures {
@@ -258,107 +265,6 @@ export function performanceOf(rows: GameRow[]): { games: number; rating?: number
 	};
 }
 
-export interface ErrorFigures {
-	games: number;
-	errors: number;
-	moves: number;
-	rate?: number;
-	medianAcpl?: number;
-}
-
-export function errorFigures(rows: Array<GameRow & { summary: GameSummary }>): ErrorFigures {
-	let errors = 0;
-	let moves = 0;
-	for (const g of rows) {
-		moves += g.summary.myMoves;
-		errors += g.summary.marks.filter((m) => m.side === "me" && isError(m.kind)).length;
-	}
-	return { games: rows.length, errors, moves, rate: errorRate(errors, moves), medianAcpl: median(rows.map((g) => g.summary.myAcpl)) };
-}
-
-export interface PhaseFigures {
-	phase: Phase;
-	myMoves: number;
-	oppMoves: number;
-	myErrors: number;
-	oppErrors: number;
-	myInaccuracies: number;
-	myRate?: number;
-	oppRate?: number;
-	myInaccuracyRate?: number;
-	games: number; // games with at least one of my errors in this phase
-}
-
-export function phaseFigures(rows: Array<GameRow & { summary: GameSummary }>): PhaseFigures[] {
-	return PHASES.map((phase) => {
-		let myMoves = 0;
-		let oppMoves = 0;
-		let myErrors = 0;
-		let oppErrors = 0;
-		let myInacc = 0;
-		let games = 0;
-		for (const g of rows) {
-			myMoves += g.summary.myMovesByPhase[phase];
-			oppMoves += g.summary.oppMovesByPhase[phase];
-			const inPhase = g.summary.marks.filter((m) => m.phase === phase);
-			const mine = inPhase.filter((m) => m.side === "me" && isError(m.kind)).length;
-			myErrors += mine;
-			if (mine) games++;
-			oppErrors += inPhase.filter((m) => m.side === "opp" && isError(m.kind)).length;
-			myInacc += inPhase.filter((m) => m.side === "me" && m.kind === "inaccuracy").length;
-		}
-		return {
-			phase,
-			myMoves,
-			oppMoves,
-			myErrors,
-			oppErrors,
-			myInaccuracies: myInacc,
-			myRate: errorRate(myErrors, myMoves),
-			oppRate: errorRate(oppErrors, oppMoves),
-			myInaccuracyRate: errorRate(myInacc, myMoves),
-			games,
-		};
-	});
-}
-
-/** The phase where my error rate exceeds my opponents' by the most (20+ of my moves). */
-export function weakestPhase(phases: PhaseFigures[]): PhaseFigures | undefined {
-	let best: PhaseFigures | undefined;
-	for (const p of phases) {
-		if (p.myMoves < WEAKEST_PHASE_MIN_MOVES || p.myRate === undefined || p.oppRate === undefined) continue;
-		if (!best || p.myRate - p.oppRate > (best.myRate as number) - (best.oppRate as number)) best = p;
-	}
-	return best;
-}
-
-export interface ConversionFigures {
-	winningGames: GameRow[];
-	conversionPct?: number;
-	thrownAway: number;
-	losingGames: GameRow[];
-	savePct?: number;
-	notConverted: Array<GameRow & { summary: GameSummary }>;
-}
-
-export function conversionFigures(rows: Array<GameRow & { summary: GameSummary }>): ConversionFigures {
-	const winning = rows.filter((g) => g.summary.reachedWinning);
-	const losing = rows.filter((g) => g.summary.reachedLosing);
-	const pct = (gs: GameRow[]) => (gs.length ? (gs.reduce((a, g) => a + points(g.myResult), 0) / gs.length) * 100 : undefined);
-	return {
-		winningGames: winning,
-		conversionPct: pct(winning),
-		thrownAway: winning.reduce((a, g) => a + (1 - points(g.myResult)), 0),
-		losingGames: losing,
-		savePct: pct(losing),
-		notConverted: winning.filter((g) => g.myResult !== "win").sort((a, b) => b.summary.myPeakEvalCp - a.summary.myPeakEvalCp),
-	};
-}
-
-/* ------------------------------------------------------------------ */
-/* Panels                                                               */
-/* ------------------------------------------------------------------ */
-
 export interface BandFigures {
 	band: Band;
 	games: GameRow[];
@@ -379,6 +285,123 @@ export function bandFigures(rows: GameRow[]): BandFigures[] {
 	});
 }
 
+/** Rating history: per site × time class, games in date order with a pre-game rating. */
+export function ratingHistory(rows: GameRow[]): Array<{ group: Group; points: GameRow[] }> {
+	return siteTimeGroups(rows.filter((g) => g.myRating !== undefined && g.site !== "otb")).map((group) => ({
+		group,
+		points: [...group.games].sort((a, b) => (a.playedAt || a.date).localeCompare(b.playedAt || b.date)),
+	}));
+}
+
+/* ------------------------------------------------------------------ */
+/* Accuracy (site-provided, one site at a time)                         */
+/* ------------------------------------------------------------------ */
+
+export type AccuracyRow = GameRow & { myAccuracy: number };
+
+const hasAccuracy = (g: GameRow): g is AccuracyRow => g.myAccuracy !== undefined;
+
+/** The accuracy site to use: the preferred one if it has games, else the one with the most. */
+export function chooseAccuracySite(rows: GameRow[], preferred?: AccuracySite): AccuracySite | undefined {
+	const count = (s: AccuracySite) => rows.filter((g) => g.site === s && hasAccuracy(g)).length;
+	if (preferred && count(preferred)) return preferred;
+	const l = count("lichess");
+	const c = count("chesscom");
+	if (!l && !c) return preferred;
+	return l >= c ? "lichess" : "chesscom";
+}
+
+/** Games of one site that carry that site's accuracy for me. */
+export function accuracyRows(rows: GameRow[], site: AccuracySite | undefined): AccuracyRow[] {
+	return site ? rows.filter((g): g is AccuracyRow => g.site === site && hasAccuracy(g)) : [];
+}
+
+export interface AccuracyFigures {
+	games: number;
+	mine?: number; // mean
+	median?: number;
+	opp?: number; // mean over games with the opponent's accuracy
+	edge?: number; // mean of (mine − opponent's) in the same games
+	edgeGames: number;
+}
+
+export function accuracyFigures(rows: AccuracyRow[]): AccuracyFigures {
+	const both = rows.filter((g) => g.oppAccuracy !== undefined);
+	return {
+		games: rows.length,
+		mine: mean(rows.map((g) => g.myAccuracy)),
+		median: median(rows.map((g) => g.myAccuracy)),
+		opp: mean(both.map((g) => g.oppAccuracy as number)),
+		edge: mean(both.map((g) => g.myAccuracy - (g.oppAccuracy as number))),
+		edgeGames: both.length,
+	};
+}
+
+export interface AccuracySplit<K> {
+	key: K;
+	games: AccuracyRow[];
+	mine?: number;
+	opp?: number;
+}
+
+/** My and my opponents' accuracy in wins, draws and losses. */
+export function accuracyByResult(rows: AccuracyRow[]): Array<AccuracySplit<MyResult>> {
+	return (["win", "draw", "loss"] as MyResult[]).map((key) => {
+		const games = rows.filter((g) => g.myResult === key);
+		return { key, games, mine: mean(games.map((g) => g.myAccuracy)), opp: mean(games.filter((g) => g.oppAccuracy !== undefined).map((g) => g.oppAccuracy as number)) };
+	});
+}
+
+/** My and my opponents' accuracy per time class (only classes with games). */
+export function accuracyByTimeClass(rows: AccuracyRow[]): Array<AccuracySplit<TimeClass>> {
+	return TIME_CLASSES.map((key) => {
+		const games = rows.filter((g) => g.timeClass === key);
+		return { key, games, mine: mean(games.map((g) => g.myAccuracy)), opp: mean(games.filter((g) => g.oppAccuracy !== undefined).map((g) => g.oppAccuracy as number)) };
+	}).filter((s) => s.games.length > 0);
+}
+
+export interface TrendPoint {
+	index: number;
+	date: string;
+	accuracy?: number;
+	scorePct?: number;
+	games: GameRow[];
+}
+
+/** Rolling 20-game accuracy and score %, oldest first. Empty below 20 games. */
+export function accuracyTrend(rows: AccuracyRow[], window = TREND_WINDOW): TrendPoint[] {
+	const sorted = [...rows].sort((a, b) => (a.playedAt || a.date).localeCompare(b.playedAt || b.date));
+	const out: TrendPoint[] = [];
+	for (let i = window - 1; i < sorted.length; i++) {
+		const w = sorted.slice(i - window + 1, i + 1);
+		out.push({ index: i, date: sorted[i].date, accuracy: mean(w.map((g) => g.myAccuracy)), scorePct: scoreFigures(w).pct, games: w });
+	}
+	return out;
+}
+
+/** My least accurate games (one site's scale). */
+export function lowestAccuracy(rows: AccuracyRow[], n = 10): AccuracyRow[] {
+	return [...rows].sort((a, b) => a.myAccuracy - b.myAccuracy).slice(0, n);
+}
+
+export interface SiteJudgements {
+	games: number;
+	inaccuracies?: number; // per game
+	mistakes?: number;
+	blunders?: number;
+}
+
+/** Lichess's own counts of my inaccuracies, mistakes and blunders, per game. */
+export function siteJudgements(rows: GameRow[]): SiteJudgements {
+	const judged = rows.filter((g) => g.site === "lichess" && g.siteBlunders !== undefined);
+	const per = (f: (g: GameRow) => number | undefined) => mean(judged.map((g) => f(g) ?? 0));
+	return { games: judged.length, inaccuracies: per((g) => g.siteInaccuracies), mistakes: per((g) => g.siteMistakes), blunders: per((g) => g.siteBlunders) };
+}
+
+/* ------------------------------------------------------------------ */
+/* Openings                                                             */
+/* ------------------------------------------------------------------ */
+
 export interface OpeningRow {
 	colour: "white" | "black";
 	family: string;
@@ -386,36 +409,27 @@ export interface OpeningRow {
 	games: GameRow[];
 	scorePct?: number;
 	vsExpected?: number;
-	outcomePawns?: number; // median eval after move 15, my side
-	openingErrorRate?: number;
+	accuracy?: number; // mean, accuracy site only
+	accuracyGames: number;
 	variations?: OpeningRow[];
 }
 
-function openingRow(colour: "white" | "black", family: string, name: string, games: GameRow[], engineLabel: string): OpeningRow {
-	const eng = engineRows(games, engineLabel);
-	const evals = eng.map((g) => g.summary.myEvalAfterMove15Cp).filter((v): v is number => v !== null);
-	let errs = 0;
-	let moves = 0;
-	for (const g of eng) {
-		moves += g.summary.myMovesByPhase.opening;
-		errs += g.summary.marks.filter((m) => m.side === "me" && m.phase === "opening" && isError(m.kind)).length;
-	}
-	const ve = vsExpected(games);
-	const outcome = median(evals);
+function openingRow(colour: "white" | "black", family: string, name: string, games: GameRow[], site?: AccuracySite): OpeningRow {
+	const acc = accuracyRows(games, site);
 	return {
 		colour,
 		family,
 		name,
 		games,
 		scorePct: scoreFigures(games).pct,
-		vsExpected: ve.diff,
-		outcomePawns: outcome !== undefined ? outcome / 100 : undefined,
-		openingErrorRate: errorRate(errs, moves),
+		vsExpected: vsExpected(games).diff,
+		accuracy: mean(acc.map((g) => g.myAccuracy)),
+		accuracyGames: acc.length,
 	};
 }
 
 /** Grouped by my colour, then opening family (sorted by games); variations by full name. */
-export function openingTable(rows: GameRow[], engineLabel: string): OpeningRow[] {
+export function openingTable(rows: GameRow[], site?: AccuracySite): OpeningRow[] {
 	const out: OpeningRow[] = [];
 	for (const colour of ["white", "black"] as const) {
 		const byFamily = new Map<string, GameRow[]>();
@@ -423,9 +437,8 @@ export function openingTable(rows: GameRow[], engineLabel: string): OpeningRow[]
 			if (!byFamily.has(g.family)) byFamily.set(g.family, []);
 			byFamily.get(g.family)?.push(g);
 		}
-		const fams = [...byFamily.entries()].sort((a, b) => b[1].length - a[1].length);
-		for (const [family, games] of fams) {
-			const row = openingRow(colour, family, family, games, engineLabel);
+		for (const [family, games] of [...byFamily.entries()].sort((a, b) => b[1].length - a[1].length)) {
+			const row = openingRow(colour, family, family, games, site);
 			const byName = new Map<string, GameRow[]>();
 			for (const g of games) {
 				const n = g.opening ?? g.eco ?? family;
@@ -435,7 +448,7 @@ export function openingTable(rows: GameRow[], engineLabel: string): OpeningRow[]
 			if (byName.size > 1 || (byName.size === 1 && !byName.has(family))) {
 				row.variations = [...byName.entries()]
 					.sort((a, b) => b[1].length - a[1].length)
-					.map(([name, gs]) => openingRow(colour, family, name, gs, engineLabel));
+					.map(([name, gs]) => openingRow(colour, family, name, gs, site));
 			}
 			out.push(row);
 		}
@@ -443,104 +456,56 @@ export function openingTable(rows: GameRow[], engineLabel: string): OpeningRow[]
 	return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* Time management (from clocks)                                        */
+/* ------------------------------------------------------------------ */
+
 export interface TimeFigures {
-	withClocks: Array<GameRow & { summary: GameSummary }>;
+	withClocks: GameRow[];
 	withoutClocks: number;
 	timeTroubleGames: GameRow[];
 	timeTroublePct?: number;
-	pressureRate?: number;
-	calmRate?: number;
-	pressureMoves: number;
-	calmMoves: number;
+	scoreInTrouble?: number;
+	scoreWithout?: number;
 	medianFirst10?: number;
 	lostOnTime: GameRow[];
 }
 
-export function timeFigures(rows: Array<GameRow & { summary: GameSummary }>): TimeFigures {
-	const withClocks = rows.filter((g) => g.summary.hasClocks && g.summary.timeTrouble !== null);
-	let pErr = 0;
-	let cErr = 0;
-	let pMoves = 0;
-	let cMoves = 0;
-	for (const g of withClocks) {
-		const under = g.summary.myMovesUnderPressure ?? 0;
-		pMoves += under;
-		cMoves += g.summary.myMoves - under;
-		for (const m of g.summary.marks) {
-			if (m.side !== "me" || !isError(m.kind)) continue;
-			if (m.underPressure) pErr++;
-			else cErr++;
-		}
-	}
-	const trouble = withClocks.filter((g) => g.summary.timeTrouble);
+export function timeFigures(rows: GameRow[]): TimeFigures {
+	const withClocks = rows.filter((g) => g.timeTrouble !== undefined);
+	const trouble = withClocks.filter((g) => g.timeTrouble);
+	const calm = withClocks.filter((g) => !g.timeTrouble);
 	return {
 		withClocks,
 		withoutClocks: rows.length - withClocks.length,
 		timeTroubleGames: trouble,
 		timeTroublePct: withClocks.length ? (trouble.length / withClocks.length) * 100 : undefined,
-		pressureRate: errorRate(pErr, pMoves),
-		calmRate: errorRate(cErr, cMoves),
-		pressureMoves: pMoves,
-		calmMoves: cMoves,
-		medianFirst10: median(withClocks.map((g) => g.summary.secondsOnFirst10Moves).filter((v): v is number => v !== null)),
-		lostOnTime: withClocks.filter((g) => g.summary.lostOnTime),
+		scoreInTrouble: scoreFigures(trouble).pct,
+		scoreWithout: scoreFigures(calm).pct,
+		medianFirst10: median(withClocks.map((g) => g.first10Seconds).filter((v): v is number => v !== undefined)),
+		lostOnTime: rows.filter((g) => lostOnTime(g.myResult, g.termination)),
 	};
 }
 
-export interface TrendPoint {
-	index: number; // position of the window's last game
-	date: string;
-	errorRate?: number;
-	scorePct?: number;
-	games: GameRow[];
-}
-
-/** Rolling 20-game error rate and score %, oldest first. Empty below 20 analysed games. */
-export function trend(rows: Array<GameRow & { summary: GameSummary }>, window = TREND_WINDOW): TrendPoint[] {
-	const sorted = [...rows].sort((a, b) => (a.playedAt || a.date).localeCompare(b.playedAt || b.date));
-	const out: TrendPoint[] = [];
-	for (let i = window - 1; i < sorted.length; i++) {
-		const w = sorted.slice(i - window + 1, i + 1);
-		out.push({ index: i, date: sorted[i].date, errorRate: errorFigures(w).rate, scorePct: scoreFigures(w).pct, games: w });
-	}
-	return out;
-}
-
-export interface Swing {
-	game: GameRow & { summary: GameSummary };
-	mark: SummaryMark;
-	moveNumber: number;
-}
-
-/** The largest drops in my winning chances in the selection. */
-export function biggestSwings(rows: Array<GameRow & { summary: GameSummary }>, n = 10): Swing[] {
-	const all: Swing[] = [];
-	for (const g of rows) {
-		for (const m of g.summary.marks) {
-			if (m.side === "me") all.push({ game: g, mark: m, moveNumber: Math.ceil(m.ply / 2) });
-		}
-	}
-	return all.sort((a, b) => b.mark.deltaW - a.mark.deltaW).slice(0, n);
-}
+/* ------------------------------------------------------------------ */
+/* Review queue                                                         */
+/* ------------------------------------------------------------------ */
 
 export interface QueueItem {
-	game: GameRow & { summary: GameSummary };
+	game: AccuracyRow & { oppAccuracy: number };
 	priority: number;
+	gap: number; // opponent − me, accuracy points
 }
 
-/** Analysed, unreviewed games ranked by review priority. */
-export function reviewQueue(rows: Array<GameRow & { summary: GameSummary }>, n = 10): QueueItem[] {
+/**
+ * Unreviewed games where both accuracies are known, ranked by how much worse I
+ * played than my opponent (+0.5 if lost). Comparing within one game is fair on
+ * either site's scale, so both sites share the queue.
+ */
+export function reviewQueue(rows: GameRow[], n = 10): QueueItem[] {
 	return rows
-		.filter((g) => !g.reviewed)
-		.map((g) => ({ game: g, priority: reviewPriority(g.summary.biggestSwing?.deltaW ?? 0, g.myResult, g.summary.reachedWinning) }))
+		.filter((g): g is AccuracyRow & { oppAccuracy: number } => !g.reviewed && g.myAccuracy !== undefined && g.oppAccuracy !== undefined)
+		.map((g) => ({ game: g, gap: g.oppAccuracy - g.myAccuracy, priority: reviewPriority(g.myAccuracy, g.oppAccuracy, g.myResult) }))
 		.sort((a, b) => b.priority - a.priority || b.game.date.localeCompare(a.game.date))
 		.slice(0, n);
-}
-
-/** Rating history: per site × time class, games in date order with a pre-game rating. */
-export function ratingHistory(rows: GameRow[]): Array<{ group: Group; points: GameRow[] }> {
-	return siteTimeGroups(rows.filter((g) => g.myRating !== undefined && g.site !== "otb")).map((group) => ({
-		group,
-		points: [...group.games].sort((a, b) => (a.playedAt || a.date).localeCompare(b.playedAt || b.date)),
-	}));
 }

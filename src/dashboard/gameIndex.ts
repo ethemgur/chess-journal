@@ -1,7 +1,6 @@
-/** The dashboard's game index: frontmatter from metadataCache plus summaries.json, refreshed on change. */
+/** The dashboard's game index: game-note frontmatter from metadataCache, refreshed on change. */
 import { App, TFile, normalizePath } from "obsidian";
 import { GameRow, rowFromFrontmatter } from "./compute";
-import type { SummaryStore } from "./summary";
 
 export const INDEX_DEBOUNCE_MS = 2000;
 
@@ -10,7 +9,7 @@ export class GameIndex {
 	private listeners = new Set<() => void>();
 	private timer?: number;
 
-	constructor(private app: App, private gamesFolder: () => string, private summaries: SummaryStore) {}
+	constructor(private app: App, private gamesFolder: () => string) {}
 
 	/** All game rows (built on first use, then kept until invalidated). */
 	all(): GameRow[] {
@@ -32,10 +31,10 @@ export class GameIndex {
 	private rowFor(f: TFile): GameRow | undefined {
 		const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
 		if (!fm || typeof fm["game-key"] !== "string") return undefined;
-		return rowFromFrontmatter(f.path, fm, this.summaries.get(fm["game-key"]));
+		return rowFromFrontmatter(f.path, fm);
 	}
 
-	/** Note or analysis changes: rebuild after a short pause (debounced). */
+	/** Note changes: rebuild after a short pause (debounced). */
 	invalidate(immediate = false): void {
 		window.clearTimeout(this.timer);
 		const run = () => {

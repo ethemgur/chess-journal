@@ -36,8 +36,6 @@ export interface ChessJournalSettings {
 	dashboardPeriod: "30d" | "3m" | "12m" | "all";
 	dashboardPalette: "accent" | "semantic" | "soft";
 	dashboardMinGames: number;
-	dashboardWinningCp: number;
-	dashboardShowInaccuracies: boolean;
 }
 
 function monthsAgo(n: number): string {
@@ -59,7 +57,7 @@ export function defaultSettings(): ChessJournalSettings {
 		ratedOnly: true,
 		importSince: monthsAgo(12),
 		syncOnStartup: false,
-		autoAnalyse: true,
+		autoAnalyse: false,
 		budgetMode: "time",
 		movetimeMs: 1500,
 		depth: 18,
@@ -73,8 +71,6 @@ export function defaultSettings(): ChessJournalSettings {
 		dashboardPeriod: "3m",
 		dashboardPalette: "semantic",
 		dashboardMinGames: 5,
-		dashboardWinningCp: 200,
-		dashboardShowInaccuracies: false,
 	};
 }
 
@@ -183,6 +179,7 @@ export class ChessJournalSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Engine").setHeading();
 		new Setting(containerEl)
 			.setName("Analyse new games automatically")
+			.setDesc("Runs Stockfish on this device for every imported game. Off by default: the dashboard uses the accuracy Lichess and chess.com provide.")
 			.addToggle((t) => t.setValue(s.autoAnalyse).onChange(async (v) => { s.autoAnalyse = v; await save(); }));
 		new Setting(containerEl)
 			.setName("Analysis budget")
@@ -242,13 +239,5 @@ export class ChessJournalSettingTab extends PluginSettingTab {
 			.setName("Minimum games before showing a percentage")
 			.addSlider((sl) => sl.setLimits(1, 20, 1).setValue(s.dashboardMinGames).setDynamicTooltip()
 				.onChange(async (v) => { s.dashboardMinGames = v; await save(); }));
-		new Setting(containerEl)
-			.setName("Winning / losing threshold (centipawns)")
-			.setDesc("A game counts as winning (losing) when your evaluation is at least this much up (down) after two of your moves in a row. Changing it recomputes the summaries; the engine does not run again.")
-			.addDropdown((d) => d.addOptions({ "150": "150", "200": "200", "300": "300", "400": "400" })
-				.setValue(String(s.dashboardWinningCp)).onChange(async (v) => { s.dashboardWinningCp = Number(v); await save(); this.plugin.rebuildSummaries(); }));
-		new Setting(containerEl)
-			.setName("Show inaccuracies in the phase chart")
-			.addToggle((t) => t.setValue(s.dashboardShowInaccuracies).onChange(async (v) => { s.dashboardShowInaccuracies = v; await save(); }));
 	}
 }

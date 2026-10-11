@@ -28,6 +28,13 @@ export const SYNC_KEYS = [
 	"event",
 	"round",
 	"site-accuracy",
+	"opp-accuracy",
+	"site-inaccuracies",
+	"site-mistakes",
+	"site-blunders",
+	"site-acpl",
+	"time-trouble",
+	"first-10-seconds",
 ] as const;
 
 /** Keys the plugin may rewrite after analysis. */
@@ -80,6 +87,7 @@ export type Frontmatter = Record<string, FmValue>;
 export function syncFrontmatter(r: GameRecord): Frontmatter {
 	const me = r.myColour === "white" ? r.white : r.black;
 	const opp = r.myColour === "white" ? r.black : r.white;
+	const oppColour = r.myColour === "white" ? "black" : "white";
 	const fm: Frontmatter = {
 		"cr-schema": CR_SCHEMA,
 		"game-key": r.key,
@@ -103,6 +111,13 @@ export function syncFrontmatter(r: GameRecord): Frontmatter {
 		event: r.event ?? null,
 		round: r.round ?? null,
 		"site-accuracy": r.sourceAccuracy?.[r.myColour] ?? null,
+		"opp-accuracy": r.sourceAccuracy?.[oppColour] ?? null,
+		"site-inaccuracies": r.sourceAnalysis?.[r.myColour]?.inaccuracy ?? null,
+		"site-mistakes": r.sourceAnalysis?.[r.myColour]?.mistake ?? null,
+		"site-blunders": r.sourceAnalysis?.[r.myColour]?.blunder ?? null,
+		"site-acpl": r.sourceAnalysis?.[r.myColour]?.acpl ?? null,
+		"time-trouble": r.clock?.timeTrouble ?? null,
+		"first-10-seconds": r.clock?.first10Seconds ?? null,
 	};
 	for (const k of Object.keys(fm)) if (fm[k] === null) delete fm[k];
 	return fm;

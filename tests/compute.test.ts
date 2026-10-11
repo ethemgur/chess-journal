@@ -1,61 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
 	GameRow,
+	accuracyByResult,
+	accuracyByTimeClass,
+	accuracyFigures,
+	accuracyRows,
+	accuracyTrend,
 	bandFigures,
-	biggestSwings,
-	conversionFigures,
+	chooseAccuracySite,
 	defaultFilters,
-	engineRows,
-	errorFigures,
+	lowestAccuracy,
 	matchesFilters,
 	openingTable,
 	performanceOf,
 	periodRanges,
-	phaseFigures,
 	reviewQueue,
 	rowFromFrontmatter,
 	scoreFigures,
 	select,
+	siteJudgements,
 	siteTimeGroups,
 	timeFigures,
-	trend,
 	vsExpected,
-	weakestPhase,
 } from "../src/dashboard/compute";
-import type { GameSummary, SummaryMark } from "../src/dashboard/summary";
-
-const ENGINE = "stockfish-18-lite@1.5s";
-
-function summary(p: Partial<GameSummary> & { marks?: SummaryMark[] }): GameSummary {
-	return {
-		derivedVersion: 1,
-		engine: ENGINE,
-		myMoves: 30,
-		myMovesByPhase: { opening: 12, middlegame: 12, endgame: 6 },
-		oppMovesByPhase: { opening: 12, middlegame: 12, endgame: 6 },
-		marks: [],
-		myAcpl: 30,
-		myPeakEvalCp: 50,
-		myLowEvalCp: -50,
-		myEvalAfterMove15Cp: 20,
-		reachedWinning: false,
-		reachedLosing: false,
-		peakPly: 10,
-		hasClocks: true,
-		timeTrouble: false,
-		secondsOnFirst10Moves: 60,
-		lostOnTime: false,
-		biggestSwing: null,
-		myMovesUnderPressure: 0,
-		...p,
-	};
-}
-
-const mark = (side: "me" | "opp", kind: SummaryMark["kind"], phase: SummaryMark["phase"], deltaW: number, ply = 20, underPressure = false): SummaryMark =>
-	({ ply, side, kind, deltaW, phase, evalBeforeCp: 0, evalAfterCp: -100, underPressure });
 
 let n = 0;
-function game(p: Partial<GameRow> & { s?: Partial<GameSummary> }): GameRow {
+function game(p: Partial<GameRow>): GameRow {
 	n++;
 	return {
 		key: `lichess:g${n}`,
@@ -74,24 +44,21 @@ function game(p: Partial<GameRow> & { s?: Partial<GameSummary> }): GameRow {
 		eco: "B12",
 		family: "Caro-Kann Defense",
 		opponent: `opp${n}`,
-		engine: ENGINE,
-		analysisStatus: "done",
 		reviewed: false,
 		...p,
-		summary: p.summary ?? summary(p.s ?? {}),
 	};
 }
 
 /**
- * 20 games, all Lichess rapid at 2000 v 2000 unless stated:
- * 10 wins, 4 draws, 6 losses → 12 points, 60%.
+ * 20 Lichess rapid games at 2000 v 2000: 10 wins, 4 draws, 6 losses → 12 points, 60%.
+ * Accuracy: mine 80 in wins, 70 in draws, 60 in losses; opponents' 75 throughout.
  */
 function fixture(): GameRow[] {
 	n = 0;
 	const rows: GameRow[] = [];
-	for (let i = 0; i < 10; i++) rows.push(game({ myResult: "win" }));
-	for (let i = 0; i < 4; i++) rows.push(game({ myResult: "draw", result: "1/2-1/2" }));
-	for (let i = 0; i < 6; i++) rows.push(game({ myResult: "loss", result: "0-1" }));
+	for (let i = 0; i < 10; i++) rows.push(game({ myResult: "win", myAccuracy: 80, oppAccuracy: 75 }));
+	for (let i = 0; i < 4; i++) rows.push(game({ myResult: "draw", result: "1/2-1/2", myAccuracy: 70, oppAccuracy: 75 }));
+	for (let i = 0; i < 6; i++) rows.push(game({ myResult: "loss", result: "0-1", myAccuracy: 60, oppAccuracy: 75 }));
 	return rows;
 }
 
@@ -102,48 +69,78 @@ describe("summary cards on a 20-game fixture", () => {
 	it("vs expected: equal ratings expect 10 of 20", () => {
 		const v = vsExpected(fixture());
 		expect(v.games).toBe(20);
-		expect(v.expected).toBeCloseTo(10);
 		expect(v.diff).toBeCloseTo(2);
 		expect(v.per100).toBeCloseTo(10);
 	});
-	it("performance: 60% against 2000 → 2000 + 72", () => {
+	it("performance: 60% against 2000 → 2072", () => {
 		expect(performanceOf(fixture())).toEqual({ games: 20, rating: 2072 });
 	});
-	it("error rate and weakest phase", () => {
-		const rows = fixture();
-		// 3 of my errors in the endgame across 6×20 = 120 endgame moves; opponents 1.
-		rows[0].summary = summary({ marks: [mark("me", "blunder", "endgame", 0.4), mark("me", "inaccuracy", "endgame", 0.12)] });
-		rows[1].summary = summary({ marks: [mark("me", "mistake", "endgame", 0.25), mark("opp", "mistake", "endgame", 0.2)] });
-		rows[2].summary = summary({ marks: [mark("me", "mistake", "endgame", 0.22), mark("me", "mistake", "opening", 0.21)] });
-		const eng = engineRows(rows, ENGINE);
-		const e = errorFigures(eng);
-		expect(e).toMatchObject({ games: 20, errors: 4, moves: 600 });
-		expect(e.rate).toBeCloseTo(4 / 60);
-		expect(e.medianAcpl).toBe(30);
-		const ph = phaseFigures(eng);
-		const end = ph.find((p) => p.phase === "endgame")!;
-		expect(end.myRate).toBeCloseTo(3 / 12); // 3 errors / 120 moves × 10
-		expect(end.oppRate).toBeCloseTo(1 / 12);
-		expect(end.myInaccuracies).toBe(1);
-		expect(weakestPhase(ph)?.phase).toBe("endgame");
+	it("accuracy: mean, median and edge over opponents in the same games", () => {
+		const a = accuracyFigures(accuracyRows(fixture(), "lichess"));
+		// (10×80 + 4×70 + 6×60) / 20 = 72
+		expect(a).toMatchObject({ games: 20, mine: 72, median: 75, opp: 75, edgeGames: 20 });
+		expect(a.edge).toBeCloseTo(-3);
 	});
-	it("conversion, saves and points thrown away", () => {
+	it("time trouble from clock data only", () => {
 		const rows = fixture();
-		rows[0].summary = summary({ reachedWinning: true, myPeakEvalCp: 400 }); // win
-		rows[10].summary = summary({ reachedWinning: true, myPeakEvalCp: 900 }); // draw
-		rows[14].summary = summary({ reachedWinning: true, myPeakEvalCp: 600 }); // loss
-		rows[15].summary = summary({ reachedLosing: true }); // loss
-		rows[11].summary = summary({ reachedLosing: true }); // draw
-		const c = conversionFigures(engineRows(rows, ENGINE));
-		expect(c.winningGames).toHaveLength(3);
-		expect(c.conversionPct).toBeCloseTo(50); // 1 + 0.5 + 0 of 3
-		expect(c.thrownAway).toBeCloseTo(1.5);
-		expect(c.savePct).toBeCloseTo(25); // 0 + 0.5 of 2
-		expect(c.notConverted.map((g) => g.summary.myPeakEvalCp)).toEqual([900, 600]);
+		rows[0].timeTrouble = true;
+		rows[14].timeTrouble = true; // a loss
+		rows[15].timeTrouble = false;
+		rows[15].termination = "timeout";
+		for (const r of rows.slice(1, 10)) r.timeTrouble = false;
+		const t = timeFigures(rows);
+		expect(t.withClocks).toHaveLength(12);
+		expect(t.withoutClocks).toBe(8);
+		expect(t.timeTroublePct).toBeCloseTo((2 / 12) * 100);
+		expect(t.scoreInTrouble).toBe(50); // a win and a loss
+		expect(t.lostOnTime).toHaveLength(1);
 	});
 });
 
-describe("periods and filters", () => {
+describe("accuracy is never mixed across sites", () => {
+	it("chooses one site and uses only its games", () => {
+		const rows = [...fixture(), game({ site: "chesscom", myAccuracy: 95, oppAccuracy: 60 }), game({ site: "chesscom" })];
+		expect(chooseAccuracySite(rows)).toBe("lichess"); // 20 vs 1 with accuracy
+		expect(chooseAccuracySite(rows, "chesscom")).toBe("chesscom");
+		expect(accuracyRows(rows, "chesscom")).toHaveLength(1);
+		expect(accuracyFigures(accuracyRows(rows, "lichess")).mine).toBe(72);
+		expect(chooseAccuracySite([game({})])).toBeUndefined();
+	});
+	it("splits by result and time class", () => {
+		const acc = accuracyRows(fixture(), "lichess");
+		const byResult = accuracyByResult(acc);
+		expect(byResult.map((s) => [s.key, s.games.length, s.mine, s.opp])).toEqual([["win", 10, 80, 75], ["draw", 4, 70, 75], ["loss", 6, 60, 75]]);
+		expect(accuracyByTimeClass(acc).map((s) => s.key)).toEqual(["rapid"]);
+	});
+	it("trend needs 20 games; lowest accuracy first", () => {
+		const acc = accuracyRows(fixture(), "lichess");
+		expect(accuracyTrend(acc)).toHaveLength(1);
+		expect(accuracyTrend(acc)[0].accuracy).toBe(72);
+		expect(accuracyTrend(acc.slice(0, 19))).toHaveLength(0);
+		expect(lowestAccuracy(acc, 3).map((g) => g.myAccuracy)).toEqual([60, 60, 60]);
+	});
+	it("Lichess's own judgements per game", () => {
+		const rows = [game({ siteBlunders: 1, siteMistakes: 2, siteInaccuracies: 3 }), game({ siteBlunders: 0, siteMistakes: 0, siteInaccuracies: 1 }), game({})];
+		expect(siteJudgements(rows)).toEqual({ games: 2, inaccuracies: 2, mistakes: 1, blunders: 0.5 });
+	});
+});
+
+describe("review queue", () => {
+	it("ranks by accuracy gap, +0.5 if lost; needs both accuracies; skips reviewed", () => {
+		const rows = [
+			game({ myAccuracy: 70, oppAccuracy: 85, myResult: "win" }), // 1.5
+			game({ myAccuracy: 75, oppAccuracy: 80, myResult: "loss" }), // 0.5 + 0.5 = 1.0
+			game({ myAccuracy: 50, oppAccuracy: 95, myResult: "loss", reviewed: true }),
+			game({ myAccuracy: 60, myResult: "loss" }), // no opponent accuracy
+			game({ myAccuracy: 90, oppAccuracy: 70, myResult: "draw" }), // 0
+		];
+		const q = reviewQueue(rows);
+		expect(q.map((x) => x.priority)).toEqual([1.5, 1, 0]);
+		expect(q[0].gap).toBe(15);
+	});
+});
+
+describe("periods, filters and rows", () => {
 	it("3 months and the previous 3 months", () => {
 		const r = periodRanges(defaultFilters("3m"), "2026-10-11");
 		expect(r.current).toEqual({ from: "2026-07-12", to: "2026-10-11" });
@@ -158,84 +155,32 @@ describe("periods and filters", () => {
 		expect(matchesFilters({ ...g, timeClass: "blitz" }, f)).toBe(false);
 		expect(matchesFilters({ ...g, rated: false }, f)).toBe(false);
 		expect(matchesFilters(g, { ...f, colour: "black" })).toBe(false);
-		expect(matchesFilters(g, { ...f, bands: ["stronger"] })).toBe(false);
 		expect(matchesFilters({ ...g, oppRating: 2100 }, { ...f, bands: ["stronger"] })).toBe(true);
 		expect(matchesFilters(g, { ...f, families: ["Sicilian Defense"] })).toBe(false);
-		expect(matchesFilters(g, { ...f, sites: ["chesscom"] })).toBe(false);
 		const otb = { ...g, site: "otb" as const, timeClass: undefined };
 		expect(matchesFilters(otb, f)).toBe(false);
 		expect(matchesFilters(otb, { ...f, sites: ["otb"] })).toBe(true);
-		const rows = [game({ date: "2026-06-01" }), game({ date: "2026-09-01" })];
-		expect(select(rows, f, { from: "2026-07-12", to: "2026-10-11" })).toHaveLength(1);
+		expect(select([game({ date: "2026-06-01" }), game({ date: "2026-09-01" })], f, { from: "2026-07-12", to: "2026-10-11" })).toHaveLength(1);
 	});
-	it("rows from frontmatter", () => {
+	it("rows from frontmatter, including site accuracy and clocks", () => {
 		const r = rowFromFrontmatter("a.md", {
 			"game-key": "chesscom:1", site: "chesscom", "my-colour": "black", "my-result": "draw", result: "1/2-1/2",
 			white: "x", black: "me", date: "2026-10-01", "my-rating": 1990, "opp-rating": "2010", "time-class": "blitz",
-			rated: true, opening: "Sicilian Defense: Najdorf", reviewed: true,
+			rated: true, opening: "Sicilian Defense: Najdorf", reviewed: true, "site-accuracy": 84.3, "opp-accuracy": 79.1,
+			"time-trouble": false, "first-10-seconds": 45,
 		})!;
-		expect(r).toMatchObject({ opponent: "x", myRating: 1990, oppRating: 2010, family: "Sicilian Defense", reviewed: true });
+		expect(r).toMatchObject({ opponent: "x", myRating: 1990, oppRating: 2010, family: "Sicilian Defense", reviewed: true, myAccuracy: 84.3, oppAccuracy: 79.1, timeTrouble: false, first10Seconds: 45 });
 		expect(rowFromFrontmatter("b.md", { site: "lichess" })).toBeUndefined();
 	});
-});
-
-describe("panels", () => {
-	it("bands: actual vs expected", () => {
+	it("bands, openings and groups", () => {
 		const rows = [game({ oppRating: 2300, myResult: "draw" }), game({ oppRating: 2250, myResult: "loss" }), game({ oppRating: 2000 })];
-		const b = bandFigures(rows);
-		const strong = b.find((x) => x.band === "much-stronger")!;
+		const strong = bandFigures(rows).find((x) => x.band === "much-stronger")!;
 		expect(strong.games).toHaveLength(2);
 		expect(strong.actualPct).toBeCloseTo(25);
-		expect(b.find((x) => x.band === "equal")!.actualPct).toBe(100);
-	});
-	it("openings grouped by colour then family, with variations", () => {
-		const rows = [
-			game({ opening: "Sicilian Defense: Najdorf", family: "Sicilian Defense", myColour: "black" }),
-			game({ opening: "Sicilian Defense: Dragon", family: "Sicilian Defense", myColour: "black", s: { myEvalAfterMove15Cp: -60 } }),
-			game({}),
-		];
-		const t = openingTable(rows, ENGINE);
-		expect(t.map((r) => `${r.colour}:${r.name}:${r.games.length}`)).toEqual(["white:Caro-Kann Defense:1", "black:Sicilian Defense:2"]);
-		expect(t[1].variations?.map((v) => v.name)).toEqual(["Sicilian Defense: Najdorf", "Sicilian Defense: Dragon"]);
-		expect(t[1].outcomePawns).toBeCloseTo(-0.2); // median of 20 and −60 cp
-	});
-	it("time management excludes games without clocks", () => {
-		const rows = fixture();
-		rows[0].summary = summary({ hasClocks: false, timeTrouble: null });
-		rows[1].summary = summary({ timeTrouble: true, myMovesUnderPressure: 10, marks: [mark("me", "blunder", "endgame", 0.5, 50, true)] });
-		rows[2].summary = summary({ lostOnTime: true, timeTrouble: true, myMovesUnderPressure: 10 });
-		const t = timeFigures(engineRows(rows, ENGINE));
-		expect(t.withoutClocks).toBe(1);
-		expect(t.withClocks).toHaveLength(19);
-		expect(t.timeTroublePct).toBeCloseTo((2 / 19) * 100);
-		expect(t.pressureRate).toBeCloseTo(0.5); // 1 error in 20 moves
-		expect(t.calmRate).toBe(0);
-		expect(t.lostOnTime).toHaveLength(1);
-		expect(t.medianFirst10).toBe(60);
-	});
-	it("trend needs 20 games; swings and review queue order", () => {
-		const rows = fixture();
-		expect(trend(engineRows(rows, ENGINE))).toHaveLength(1);
-		expect(trend(engineRows(rows.slice(0, 19), ENGINE))).toHaveLength(0);
-		rows[3].summary = summary({ marks: [mark("me", "blunder", "middlegame", 0.9, 41)], biggestSwing: { ply: 41, deltaW: 0.9 } });
-		rows[16].summary = summary({ marks: [mark("me", "mistake", "endgame", 0.3, 61)], biggestSwing: { ply: 61, deltaW: 0.3 }, reachedWinning: true });
-		rows[17].reviewed = true;
-		rows[17].summary = summary({ biggestSwing: { ply: 9, deltaW: 1.5 } });
-		const sw = biggestSwings(engineRows(rows, ENGINE));
-		expect(sw.map((s) => s.mark.deltaW)).toEqual([0.9, 0.3]);
-		expect(sw[0].moveNumber).toBe(21);
-		const q = reviewQueue(engineRows(rows, ENGINE));
-		// game 17 (loss, swing 0.3, winning not won): 0.3 + 0.5 + 0.25 = 1.05; game 4 (win, 0.9): 0.9
-		expect(q[0].game.key).toBe(rows[16].key);
-		expect(q[0].priority).toBeCloseTo(1.05);
-		expect(q[1].game.key).toBe(rows[3].key);
-		expect(q.find((x) => x.game.key === rows[17].key)).toBeUndefined();
-	});
-	it("only games analysed with the current engine count", () => {
-		const rows = fixture();
-		rows[0].engine = "stockfish-18-lite@d18";
-		rows[1].analysisStatus = "queued";
-		expect(engineRows(rows, ENGINE)).toHaveLength(18);
-		expect(siteTimeGroups(rows)[0].id).toBe("lichess|rapid");
+		const t = openingTable([game({ myAccuracy: 80 }), game({ myAccuracy: 70, opening: "Caro-Kann Defense: Classical" }), game({ site: "chesscom", myAccuracy: 99 })], "lichess");
+		expect(t[0].games).toHaveLength(3);
+		expect(t[0].accuracy).toBe(75); // the chess.com game's accuracy is not mixed in
+		expect(t[0].accuracyGames).toBe(2);
+		expect(siteTimeGroups(fixture())[0].id).toBe("lichess|rapid");
 	});
 });

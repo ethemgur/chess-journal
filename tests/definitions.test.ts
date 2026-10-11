@@ -1,19 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-	endgameStartPly,
+	accuracyEdge,
 	expectedScore,
 	fideDp,
 	inTimeTrouble,
+	lostOnTime,
+	mean,
+	median,
 	openingFamily,
 	performanceRating,
-	phaseOfPly,
 	ratingBand,
-	reachedWinningLosing,
 	reviewPriority,
 	timeTroubleThreshold,
-	errorRate,
-	pointsThrownAway,
-	median,
 } from "../src/dashboard/definitions";
 
 describe("score and ratings", () => {
@@ -48,29 +46,7 @@ describe("score and ratings", () => {
 	});
 });
 
-describe("phases", () => {
-	it("endgame starts when both sides' non-pawn material totals 26 or less", () => {
-		const start = { white: 31, black: 31 };
-		expect(endgameStartPly([start, start, { white: 22, black: 17 }, { white: 13, black: 13 }])).toBe(3);
-		expect(endgameStartPly([start, start])).toBeUndefined();
-	});
-	it("opening is plies 1–24 unless the endgame starts earlier", () => {
-		expect(phaseOfPly(1, undefined)).toBe("opening");
-		expect(phaseOfPly(24, undefined)).toBe("opening");
-		expect(phaseOfPly(25, undefined)).toBe("middlegame");
-		expect(phaseOfPly(20, 18)).toBe("endgame");
-		expect(phaseOfPly(17, 18)).toBe("opening");
-		expect(phaseOfPly(60, 50)).toBe("endgame");
-	});
-});
-
-describe("winning, time trouble, errors", () => {
-	it("winning/losing need two consecutive moves of mine", () => {
-		expect(reachedWinningLosing([50, 250, 100, 300])).toEqual({ winning: false, losing: false });
-		expect(reachedWinningLosing([50, 250, 210])).toEqual({ winning: true, losing: false });
-		expect(reachedWinningLosing([-300, -200, 0])).toEqual({ winning: false, losing: true });
-		expect(reachedWinningLosing([150, 160], 150)).toEqual({ winning: true, losing: false });
-	});
+describe("time trouble and accuracy", () => {
 	it("time trouble below max(10% of base, 30 s); none without clocks or for daily", () => {
 		expect(timeTroubleThreshold(600)).toBe(60);
 		expect(timeTroubleThreshold(180)).toBe(30);
@@ -79,12 +55,13 @@ describe("winning, time trouble, errors", () => {
 		expect(inTimeTrouble([], 600, false)).toBeNull();
 		expect(inTimeTrouble([10], 86400, true)).toBeNull();
 	});
-	it("error rate per 10 moves", () => {
-		expect(errorRate(3, 40)).toBe(0.75);
-		expect(errorRate(1, 0)).toBeUndefined();
-	});
-	it("points thrown away and median", () => {
-		expect(pointsThrownAway([{ reachedWinning: true, result: "draw" }, { reachedWinning: true, result: "loss" }, { reachedWinning: false, result: "loss" }])).toBe(1.5);
+	it("losses on time, accuracy edge, mean and median", () => {
+		expect(lostOnTime("loss", "timeout")).toBe(true);
+		expect(lostOnTime("loss", "resignation")).toBe(false);
+		expect(lostOnTime("draw", "timeout vs insufficient material")).toBe(false);
+		expect(accuracyEdge(84.5, 80)).toBeCloseTo(4.5);
+		expect(mean([80, 90])).toBe(85);
+		expect(mean([])).toBeUndefined();
 		expect(median([3, 1, 2])).toBe(2);
 		expect(median([1, 2, 3, 4])).toBe(2.5);
 	});
@@ -96,11 +73,10 @@ describe("openings and review priority", () => {
 		expect(openingFamily(undefined, "B12")).toBe("B12");
 		expect(openingFamily("", "")).toBe("Unknown");
 	});
-	it("review priority = swing + 0.5 if lost + 0.25 if a win was not converted", () => {
-		expect(reviewPriority(0.4, "win", true)).toBeCloseTo(0.4);
-		expect(reviewPriority(0.4, "loss", false)).toBeCloseTo(0.9);
-		expect(reviewPriority(0.4, "loss", true)).toBeCloseTo(1.15);
-		expect(reviewPriority(0.4, "draw", true)).toBeCloseTo(0.65);
-		expect(reviewPriority(5, "win", false)).toBe(2);
+	it("review priority = accuracy gap ÷ 10 (0–2) + 0.5 if lost", () => {
+		expect(reviewPriority(80, 90, "win")).toBeCloseTo(1);
+		expect(reviewPriority(80, 90, "loss")).toBeCloseTo(1.5);
+		expect(reviewPriority(90, 80, "loss")).toBeCloseTo(0.5); // I was more accurate: no gap
+		expect(reviewPriority(40, 95, "draw")).toBe(2); // capped
 	});
 });

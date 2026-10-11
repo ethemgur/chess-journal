@@ -1,5 +1,6 @@
 /** Every source -> one GameRecord. Pure functions, no vault or network access. */
-import type { Colour, GameRecord, MyResult, Result, TimeClass } from "../types";
+import type { Colour, GameRecord, MyResult, Result, SiteAnalysis, TimeClass } from "../types";
+import { clockStats } from "./clock";
 import { mainline, parseGame } from "../pgn/tree";
 
 /* ------------------------------------------------------------------ */
@@ -47,7 +48,7 @@ export interface LichessPlayer {
 	user?: { name: string; id?: string };
 	aiLevel?: number;
 	rating?: number;
-	analysis?: { accuracy?: number };
+	analysis?: { accuracy?: number; inaccuracy?: number; mistake?: number; blunder?: number; acpl?: number };
 }
 
 export interface LichessGame {
@@ -117,6 +118,12 @@ export function normaliseLichess(g: LichessGame, username: string): Normalised {
 	if (g.clock) timeControl = `${g.clock.initial}+${g.clock.increment}`;
 	else if (g.daysPerTurn) timeControl = `1/${g.daysPerTurn * 86400}`;
 	const acc = { white: g.players.white.analysis?.accuracy, black: g.players.black.analysis?.accuracy };
+	const judged = (p: LichessPlayer): SiteAnalysis | undefined =>
+		p.analysis && (p.analysis.mistake !== undefined || p.analysis.blunder !== undefined)
+			? { inaccuracy: p.analysis.inaccuracy, mistake: p.analysis.mistake, blunder: p.analysis.blunder, acpl: p.analysis.acpl }
+			: undefined;
+	const analysis = { white: judged(g.players.white), black: judged(g.players.black) };
+	const timeClass = lichessTimeClass(g.speed);
 	return {
 		ok: true,
 		record: {
@@ -131,12 +138,14 @@ export function normaliseLichess(g: LichessGame, username: string): Normalised {
 			myResult: myResultOf(result, myColour),
 			termination: LICHESS_TERMINATION[g.status] ?? g.status,
 			timeControl,
-			timeClass: lichessTimeClass(g.speed),
+			timeClass,
 			rated: g.rated ?? false,
 			eco: g.opening?.eco ?? tags.get("ECO"),
 			opening: g.opening?.name ?? tags.get("Opening"),
 			event: tags.get("Event"),
 			sourceAccuracy: acc.white !== undefined || acc.black !== undefined ? acc : undefined,
+			sourceAnalysis: analysis.white || analysis.black ? analysis : undefined,
+			clock: clockStats(g.pgn, myColour, timeClass === "daily"),
 			pgn: g.pgn.trim(),
 		},
 	};
@@ -237,6 +246,7 @@ export function normaliseChesscom(g: ChesscomGame, username: string): Normalised
 			eco: tags.get("ECO"),
 			opening: openingFromEcoUrl(ecoUrl),
 			sourceAccuracy: acc && (acc.white !== undefined || acc.black !== undefined) ? acc : undefined,
+			clock: clockStats(g.pgn, myColour, tc === "daily"),
 			pgn: g.pgn.trim(),
 		},
 	};
@@ -335,6 +345,7 @@ export async function normaliseOtb(pgn: string, myColour: Colour): Promise<Norma
 			opening: known(tags.get("Opening")),
 			event: known(tags.get("Event")),
 			round: known(tags.get("Round")),
+			clock: clockStats(pgn, myColour, false),
 			pgn: pgn.trim(),
 		},
 	};

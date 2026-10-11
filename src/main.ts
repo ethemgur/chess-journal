@@ -11,10 +11,8 @@ import { ENGINE_TOTAL_MB, EngineFiles } from "./engine/engineFiles";
 import { EngineService } from "./engine/service";
 import { AnalysisCache } from "./engine/cache";
 import { AnalysisQueue, QueueState } from "./engine/queue";
-import type { GameAnalysis } from "./engine/types";
 import { DashboardView, VIEW_TYPE_DASHBOARD } from "./dashboard/DashboardView";
 import { GameIndex } from "./dashboard/gameIndex";
-import { SummaryStore, computeSummary } from "./dashboard/summary";
 import { RatingsCache } from "./dashboard/ratings";
 import { Filters, GameRow, defaultFilters } from "./dashboard/compute";
 import { chesscomUserAgent } from "./sources/chesscom";
@@ -46,12 +44,10 @@ export default class ChessJournalPlugin extends Plugin {
 	private syncing = false;
 	private syncCancelled = false;
 	private activeBoard: BoardView | null = null;
-	summaries!: SummaryStore;
 	gameIndex!: GameIndex;
 	private ratings!: RatingsCache;
 	private gotoListeners = new Map<string, Set<(ply: number) => void>>();
 	private pendingGoto?: { key: string; ply: number };
-	private summaryRebuild?: Promise<void>;
 
 	settings!: ChessJournalSettings;
 
@@ -106,17 +102,10 @@ export default class ChessJournalPlugin extends Plugin {
 				this.renderStatus();
 			},
 			notify: (t) => new Notice(`Chess Journal: ${t}`),
-			onAnalysed: (key, pgn, analysis) => this.storeSummary(key, pgn, analysis),
 		});
 
-		// Dashboard: per-game summaries, the game index and live ratings.
-		this.summaries = new SummaryStore(
-			{ exists: (p) => adapter.exists(p), read: (p) => adapter.read(p), write: (p, d) => adapter.write(p, d) },
-			`${dir}/summaries.json`,
-		);
-		await this.summaries.load();
-		this.register(() => void this.summaries.flush());
-		this.gameIndex = new GameIndex(this.app, () => this.settings.gamesFolder, this.summaries);
+		// Dashboard: the game index (from frontmatter) and live ratings.
+		this.gameIndex = new GameIndex(this.app, () => this.settings.gamesFolder);
 		this.register(() => this.gameIndex.dispose());
 		this.ratings = new RatingsCache(obsidianHttp);
 		this.registerView(VIEW_TYPE_DASHBOARD, (leaf: WorkspaceLeaf) =>
@@ -125,7 +114,6 @@ export default class ChessJournalPlugin extends Plugin {
 				index: this.gameIndex,
 				ratings: this.ratings,
 				settings: () => this.settings,
-				engineLabel: () => engineLabel(this.settings),
 				chesscomUserAgent: () => chesscomUserAgent(this.manifest.version, this.settings.chesscomUsername, this.settings.contactEmail),
 				filters: () => this.data.dashboardFilters ?? defaultFilters(this.settings.dashboardPeriod),
 				saveFilters: (f) => {
@@ -134,7 +122,6 @@ export default class ChessJournalPlugin extends Plugin {
 				},
 				openGame: (row, ply) => void this.openGameAt(row, ply),
 				markReviewed: (row) => this.markReviewed(row),
-				onSummariesChange: (fn) => this.summaries.onChange(fn),
 			}),
 		);
 		this.registerEvent(
@@ -168,7 +155,6 @@ export default class ChessJournalPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => {
 			this.notes.buildIndex();
 			this.queue.kick();
-			void this.ensureSummaries();
 			if (this.settings.syncOnStartup) {
 				const t = window.setTimeout(() => void this.runSync("all"), 30_000);
 				this.register(() => window.clearTimeout(t));
@@ -218,58 +204,6 @@ export default class ChessJournalPlugin extends Plugin {
 		const leaf = existing ?? this.app.workspace.getLeaf("tab");
 		if (!existing) await leaf.setViewState({ type: VIEW_TYPE_DASHBOARD, active: true });
 		this.app.workspace.revealLeaf(leaf);
-	}
-
-	/** Derive and store a game's summary from its PGN and analysis (no engine run). */
-	private async storeSummary(key: string, pgn: string, analysis: GameAnalysis): Promise<void> {
-		const f = this.notes.fileFor(key);
-		const fm = f ? this.app.metadataCache.getFileCache(f)?.frontmatter ?? {} : {};
-		const myResult = fm["my-result"];
-		if (myResult !== "win" && myResult !== "loss" && myResult !== "draw") return;
-		try {
-			this.summaries.set(key, computeSummary({
-				pgn,
-				analysis,
-				myColour: fm["my-colour"] === "black" ? "black" : "white",
-				myResult,
-				termination: typeof fm.termination === "string" ? fm.termination : undefined,
-				daily: fm["time-class"] === "daily",
-				winningCp: this.settings.dashboardWinningCp,
-			}));
-		} catch (e) {
-			console.error("Chess Journal: summary failed for", key, e);
-		}
-	}
-
-	/** Build missing or outdated summaries from the analysis cache, in the background. */
-	ensureSummaries(): Promise<void> {
-		if (this.summaryRebuild) return this.summaryRebuild;
-		this.summaryRebuild = (async () => {
-			const cp = this.settings.dashboardWinningCp;
-			if (this.summaries.needsFullRebuild(cp)) this.summaries.resetFor(cp);
-			this.notes.buildIndex();
-			let n = 0;
-			for (const [key] of this.notes.index) {
-				if (this.summaries.isCurrent(key, cp)) continue;
-				const analysis = await this.cache.get(key);
-				const game = analysis && (await this.readGame(key));
-				if (analysis && game) await this.storeSummary(key, game.pgn, analysis);
-				if (++n % 25 === 0) await new Promise((r) => window.setTimeout(r, 0));
-			}
-		})().finally(() => {
-			this.summaryRebuild = undefined;
-			this.gameIndex.invalidate(true);
-		});
-		return this.summaryRebuild;
-	}
-
-	/** The winning threshold changed: recompute every summary from the cache. */
-	rebuildSummaries(): void {
-		void (async () => {
-			await this.summaryRebuild;
-			this.summaries.resetFor(this.settings.dashboardWinningCp);
-			await this.ensureSummaries();
-		})();
 	}
 
 	/** Open a game's note and, if given, jump its board to a main-line ply. */
@@ -410,6 +344,17 @@ export default class ChessJournalPlugin extends Plugin {
 		});
 		this.addCommand({ id: "download-engine", name: "Download engine", callback: () => this.confirmEngineDownload(true) });
 		this.addCommand({ id: "open-dashboard", name: "Open performance dashboard", callback: () => void this.openDashboard() });
+		this.addCommand({
+			id: "refresh-site-data",
+			name: "Refresh accuracy and site data for all games",
+			callback: async () => {
+				// Re-fetch everything since "Import games since": notes only get their site-owned keys
+				// (accuracy, Lichess judgements, clocks) updated; nothing else is touched.
+				this.data.sync = emptySyncState();
+				await this.savePluginData();
+				await this.runSync("all");
+			},
+		});
 	}
 
 	private importPgn(): void {
@@ -579,7 +524,6 @@ export default class ChessJournalPlugin extends Plugin {
 				const key = this.notes.keyForPath(file.path);
 				if (!key) return;
 				this.notes.index.delete(key);
-				this.summaries.remove(key);
 				this.gameIndex.invalidate();
 				// A game the user deleted is not re-created on the next sync.
 				if (!this.data.deletedKeys.includes(key)) this.data.deletedKeys.push(key);

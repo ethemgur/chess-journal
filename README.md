@@ -16,7 +16,7 @@ Compatible with chess.com and Lichess. Not affiliated with either.
 1. Install and enable the plugin.
 2. Open **Settings → Chess Journal** and enter your Lichess and/or chess.com username. For chess.com, also enter a contact email; chess.com asks API clients to identify themselves.
 3. Run **Sync all games** from the command palette or the ribbon menu.
-4. The first analysis asks to download the engine (about 7.3 MB, once). You can also run **Download engine** yourself.
+4. Optional: the board's engine (and the analysis queue, off by default) asks to download Stockfish the first time you use it (about 7.3 MB, once). The dashboard does not need it.
 
 Games are written to `Chess/Games` by default. The first sync imports the last 12 months of rapid, classical and daily rated games; change this in the settings.
 
@@ -59,7 +59,7 @@ What the plugin will and won't touch:
 
 ### Frontmatter keys (schema 1)
 
-`cr-schema`, `game-key`, `site`, `url`, `played-at`, `date`, `white`, `black`, `my-colour`, `my-rating`, `opp-rating`, `result`, `my-result`, `termination`, `time-control`, `time-class`, `rated`, `eco`, `opening`, `event`, `round`, `site-accuracy`, `analysis-status`, `engine`, `my-acpl`, `my-inaccuracies`, `my-mistakes`, `my-blunders`, `opp-mistakes`, `opp-blunders`, `tags` (shared), `reviewed` (yours).
+`cr-schema`, `game-key`, `site`, `url`, `played-at`, `date`, `white`, `black`, `my-colour`, `my-rating`, `opp-rating`, `result`, `my-result`, `termination`, `time-control`, `time-class`, `rated`, `eco`, `opening`, `event`, `round`, `site-accuracy`, `opp-accuracy`, `site-inaccuracies`, `site-mistakes`, `site-blunders`, `site-acpl`, `time-trouble`, `first-10-seconds`, `analysis-status`, `engine`, `my-acpl`, `my-inaccuracies`, `my-mistakes`, `my-blunders`, `opp-mistakes`, `opp-blunders`, `tags` (shared), `reviewed` (yours).
 
 `time-control` is written as the sites show it: minutes + increment in seconds (`3+2`, `10+5`, `½+0`), or `3 days` for daily games. The game's PGN keeps its original `TimeControl` tag in seconds. `time-class` is the site's own label (bullet, blitz, rapid, classical, daily).
 
@@ -91,7 +91,9 @@ Keys only apply to the board that has focus. The plugin sets no default hotkeys.
 
 Your edits (moves, comments, symbols, arrows and circles) are written into the note's `chess-game` block when you leave the board: when you tap or click anywhere outside it, switch or close the note, or Obsidian goes to the background. Saving while you work would make Obsidian redraw the block on every change.
 
-## Analysis
+## On-device analysis (optional)
+
+Off by default: the dashboard uses the sites' accuracy instead. Turn on **Analyse new games automatically** (or run **Analyse this game**) if you want Stockfish to analyse games on your device.
 
 - Each game's main line is analysed once with a fixed setting (1.5 s per position by default), so mistake counts are comparable across sites and months. The setting used is stored in each game's `engine` key.
 - The opening uses Lichess cloud eval: up to 20 plies, stopping at the first position the cloud doesn't have.
@@ -102,19 +104,19 @@ Your edits (moves, comments, symbols, arrows and circles) are written into the n
 
 ## Performance dashboard
 
-**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes and their engine analysis. It measures causes, not just results:
+**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes. It uses only what Lichess and chess.com provide: results, ratings, clock times and the sites' own accuracy figures. No game is evaluated on your device, so it works the same on a phone.
 
 - **Rating cards:** live ratings from Lichess and chess.com per time class, never merged across sites, with the change over the period. Offline, the latest rating from your notes is shown, marked "from games".
-- **Stat cards:** score, score vs expected (from pre-game ratings), performance rating (per site and time class), error rate (mistakes and blunders per 10 moves), weakest phase (your error rate against your opponents' in the same games) and conversion of winning positions. Each card compares with the previous period of the same length.
-- **Panels:** rating history · against stronger and weaker · openings (with eval after move 15, to tell the opening from the play after it) · conversion and saves · errors by phase · time management · trend (rolling 20 games) · biggest swings · review queue.
+- **Stat cards:** score, score vs expected (from pre-game ratings), performance rating (per site and time class), accuracy, accuracy vs your opponents in the same games, and time trouble. Each compares with the previous period of the same length.
+- **Panels:** rating history · against stronger and weaker · openings (score, vs expected, accuracy) · accuracy by result · accuracy by time control (with Lichess's own inaccuracy/mistake/blunder counts) · time management · accuracy trend (rolling 20 games) · least accurate games · review queue.
 
-Click a figure, bar or row to filter the dashboard or to see the games behind it; games open at the move that matters. **Mark reviewed** in the review queue sets `reviewed: true` in that note, the dashboard's only write. Engine-based figures use only games analysed with the current engine setting, and any figure from fewer than 5 games (configurable) shows the game count instead.
+**Accuracy comes from the sites:** Lichess gives it for games analysed on Lichess, chess.com for games with a Game Review. Lichess and chess.com measure accuracy on different scales, so accuracy figures always use one site at a time ("Accuracy from" in the filter bar) and are never averaged across sites. The review queue ranks unreviewed games by how much less accurate you were than your opponent in the same game, +0.5 if you lost; **Mark reviewed** sets `reviewed: true` in that note, the dashboard's only write.
 
-Per-game figures are derived once after analysis and stored in `summaries.json` in the plugin folder; they are rebuilt from the analysis cache (without running the engine) when the plugin updates how they are derived or when you change the winning threshold.
+Accuracy that a site adds later (for example after you request an analysis on Lichess) arrives with **Refresh accuracy and site data for all games**, which downloads your games again and updates only these site-owned keys.
 
 ## Commands
 
-Open performance dashboard · Sync all games · Sync Lichess games · Sync chess.com games · Cancel sync · Import PGN file · Analyse this game · Analyse all unanalysed games · Re-analyse with current settings · Pause / resume analysis · Cancel analysis · Open game on site · Copy PGN · Download engine
+Open performance dashboard · Refresh accuracy and site data for all games · Sync all games · Sync Lichess games · Sync chess.com games · Cancel sync · Import PGN file · Analyse this game · Analyse all unanalysed games · Re-analyse with current settings · Pause / resume analysis · Cancel analysis · Open game on site · Copy PGN · Download engine
 
 ## Network use and privacy
 

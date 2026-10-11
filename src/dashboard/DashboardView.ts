@@ -1,42 +1,45 @@
 /**
  * Performance dashboard: filter bar, live rating cards, six stat cards with
- * period-over-period deltas, and nine panels. Reads the game index only; the one
- * write is "Mark reviewed".
+ * period-over-period deltas, and nine panels. Uses only what Lichess and
+ * chess.com provide: results, ratings, clocks and their accuracy figures. No
+ * game is evaluated on this device. The one write is "Mark reviewed".
  */
 import { App, ItemView, Modal, WorkspaceLeaf, setIcon } from "obsidian";
 import type { Site, TimeClass } from "../types";
 import { TIME_CLASSES } from "../types";
 import type { ChessJournalSettings } from "../settings";
-import type { GameSummary } from "./summary";
 import type { GameIndex } from "./gameIndex";
 import type { RatingsCache, LiveRating } from "./ratings";
 import {
+	AccuracyRow,
+	AccuracySite,
 	BandFigures,
 	Filters,
 	GameRow,
 	OpeningRow,
 	Period,
+	accuracyByResult,
+	accuracyByTimeClass,
+	accuracyFigures,
+	accuracyRows,
+	accuracyTrend,
 	bandFigures,
-	biggestSwings,
-	conversionFigures,
+	chooseAccuracySite,
 	defaultFilters,
-	engineRows,
-	errorFigures,
+	lowestAccuracy,
 	openingTable,
 	performanceOf,
 	periodRanges,
-	phaseFigures,
 	ratingHistory,
 	reviewQueue,
 	scoreFigures,
 	select,
+	siteJudgements,
 	siteTimeGroups,
 	timeFigures,
-	trend,
 	vsExpected,
-	weakestPhase,
 } from "./compute";
-import { BANDS, BAND_LABEL, Band, Phase } from "./definitions";
+import { BANDS, BAND_LABEL, Band, MyResult } from "./definitions";
 import { Tooltip, barChart, lineChart } from "./charts";
 
 export const VIEW_TYPE_DASHBOARD = "chess-journal-dashboard";
@@ -46,22 +49,19 @@ export interface DashboardHost {
 	index: GameIndex;
 	ratings: RatingsCache;
 	settings(): ChessJournalSettings;
-	engineLabel(): string;
 	chesscomUserAgent(): string;
 	filters(): Filters;
 	saveFilters(f: Filters): void;
 	openGame(row: GameRow, ply?: number): void;
 	markReviewed(row: GameRow): Promise<void>;
-	onSummariesChange(fn: () => void): () => void;
 }
 
-type ERow = GameRow & { summary: GameSummary };
-
 const SITE_LABEL: Record<Site, string> = { lichess: "Lichess", chesscom: "chess.com", otb: "OTB" };
-const PHASE_LABEL: Record<Phase, string> = { opening: "Opening", middlegame: "Middlegame", endgame: "Endgame" };
+const RESULT_LABEL: Record<MyResult, string> = { win: "Wins", draw: "Draws", loss: "Losses" };
 const PERIODS: Array<[Period, string]> = [["30d", "30 days"], ["3m", "3 months"], ["12m", "12 months"], ["all", "All"], ["custom", "Custom"]];
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const pct = (v?: number) => (v === undefined ? "–" : `${v.toFixed(1)}%`);
+const acc = (v?: number) => (v === undefined ? "–" : v.toFixed(1));
 const signed = (v: number, digits = 1) => `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(v).toFixed(digits)}`;
 const groupLabel = (g: { site: Site; timeClass?: TimeClass }) => `${SITE_LABEL[g.site]} ${g.timeClass ?? ""}`.trim();
 const today = () => new Date().toISOString().slice(0, 10);
@@ -103,7 +103,6 @@ export class DashboardView extends ItemView {
 		this.tip = new Tooltip(this.contentEl);
 		this.body = this.contentEl.createDiv({ cls: "cr-dash-body" });
 		this.unsub.push(this.host.index.onChange(() => this.render()));
-		this.unsub.push(this.host.onSummariesChange(() => this.host.index.invalidate()));
 		this.resizeObs = new ResizeObserver(() => {
 			const w = this.contentEl.clientWidth;
 			if (Math.abs(w - this.lastWidth) < 40) return;
@@ -127,6 +126,10 @@ export class DashboardView extends ItemView {
 		this.render();
 	}
 
+	private minGames(): number {
+		return this.host.settings().dashboardMinGames;
+	}
+
 	/* ------------------------------------------------------------ */
 	/* Render                                                       */
 	/* ------------------------------------------------------------ */
@@ -146,38 +149,34 @@ export class DashboardView extends ItemView {
 		const ranges = periodRanges(this.filters, today());
 		const rows = select(all, this.filters, ranges.current);
 		const prev = ranges.previous ? select(all, this.filters, ranges.previous) : undefined;
-		const engine = this.host.engineLabel();
-		const eng = engineRows(rows, engine);
-		const engPrev = prev ? engineRows(prev, engine) : undefined;
+		const site = chooseAccuracySite(rows, this.filters.accuracySite);
+		const accRows = accuracyRows(rows, site);
+		const accPrev = prev ? accuracyRows(prev, site) : undefined;
 
-		this.renderHeader(rows, eng);
-		this.renderFilters(all);
+		this.renderHeader(rows, rows.filter((g) => g.myAccuracy !== undefined).length);
+		this.renderFilters(all, rows, site);
 		const summary = this.body.createDiv({ cls: "cr-dash-summary" });
 		this.renderRatingCards(summary.createDiv({ cls: "cr-dash-ratings" }), rows);
 		summary.createDiv({ cls: "cr-dash-divider" });
-		this.renderStatCards(summary.createDiv({ cls: "cr-dash-stats" }), rows, prev, eng, engPrev);
+		this.renderStatCards(summary.createDiv({ cls: "cr-dash-stats" }), rows, prev, accRows, accPrev, site);
 
 		const panels = this.body.createDiv({ cls: "cr-dash-panels" });
 		this.panelRatingHistory(panels, rows);
 		this.panelBands(panels, rows);
-		this.panelOpenings(panels, rows, eng);
-		this.panelConversion(panels, eng);
-		this.panelPhases(panels, eng);
-		this.panelTime(panels, eng);
-		this.panelTrend(panels, eng);
-		this.panelSwings(panels, eng);
-		this.panelQueue(panels, eng);
+		this.panelOpenings(panels, rows, site);
+		this.panelAccuracyByResult(panels, accRows, site);
+		this.panelAccuracyByTimeClass(panels, accRows, rows, site);
+		this.panelTime(panels, rows);
+		this.panelTrend(panels, accRows, site);
+		this.panelLowest(panels, accRows, site);
+		this.panelQueue(panels, rows);
 		this.contentEl.scrollTop = scroll;
 	}
 
-	private minGames(): number {
-		return this.host.settings().dashboardMinGames;
-	}
-
-	private renderHeader(rows: GameRow[], eng: ERow[]): void {
+	private renderHeader(rows: GameRow[], withAccuracy: number): void {
 		const head = this.body.createDiv({ cls: "cr-dash-head" });
 		head.createEl("h2", { text: "Performance" });
-		head.createSpan({ cls: "cr-dash-size", text: `${rows.length} games · ${eng.length} analysed` });
+		head.createSpan({ cls: "cr-dash-size", text: `${rows.length} games · ${withAccuracy} with site accuracy` });
 		const actions = head.createDiv({ cls: "cr-dash-actions" });
 		const filtersBtn = actions.createEl("button", { cls: "cr-dash-filters-btn", text: "Filters" });
 		filtersBtn.addEventListener("click", () => {
@@ -192,7 +191,7 @@ export class DashboardView extends ItemView {
 	/* Filters                                                      */
 	/* ------------------------------------------------------------ */
 
-	private renderFilters(all: GameRow[]): void {
+	private renderFilters(all: GameRow[], rows: GameRow[], site: AccuracySite | undefined): void {
 		const f = this.filters;
 		const bar = this.body.createDiv({ cls: "cr-dash-filters" + (this.drawerOpen ? " is-open" : "") });
 
@@ -246,7 +245,18 @@ export class DashboardView extends ItemView {
 			if (v && !f.families.includes(v)) this.setFilters({ ...f, families: [...f.families, v] });
 		});
 
-		// Removable chips for filters added by clicking in panels.
+		// Accuracy is on each site's own scale, so accuracy figures use one site at a time.
+		const accBox = bar.createDiv({ cls: "cr-filter" });
+		accBox.createSpan({ cls: "cr-filter-label", text: "Accuracy from" });
+		const counts: Record<AccuracySite, number> = {
+			lichess: rows.filter((g) => g.site === "lichess" && g.myAccuracy !== undefined).length,
+			chesscom: rows.filter((g) => g.site === "chesscom" && g.myAccuracy !== undefined).length,
+		};
+		for (const s of ["lichess", "chesscom"] as AccuracySite[]) {
+			const b = accBox.createEl("button", { cls: "cr-toggle" + (site === s ? " is-on" : ""), text: `${SITE_LABEL[s]} (${counts[s]})` });
+			b.addEventListener("click", () => this.setFilters({ ...f, accuracySite: s }));
+		}
+
 		const chips = this.body.createDiv({ cls: "cr-dash-chips" });
 		const chip = (text: string, remove: () => void) => {
 			const c = chips.createSpan({ cls: "cr-chip", text });
@@ -275,6 +285,7 @@ export class DashboardView extends ItemView {
 			card.createDiv({ cls: "cr-card-title", text: groupLabel(g) });
 			const value = card.createDiv({ cls: "cr-card-value", text: "…" });
 			const sub = card.createDiv({ cls: "cr-card-sub" });
+			const foot = card.createDiv({ cls: "cr-card-foot" });
 			const sorted = [...g.games].filter((x) => x.myRating !== undefined).sort((a, b) => (a.playedAt || a.date).localeCompare(b.playedAt || b.date));
 			const first = sorted[0]?.myRating;
 			const latest = sorted[sorted.length - 1]?.myRating;
@@ -290,18 +301,14 @@ export class DashboardView extends ItemView {
 				}
 				sub.createSpan({ text: ` · ${g.games.length} games` });
 				const asOf = live?.asOf ? new Date(live.asOf).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-				const note = live ? (asOf ? `as of ${asOf}` : "live") : "from games";
-				card.createDiv({ cls: "cr-card-foot", text: note });
+				foot.setText(live ? (asOf ? `as of ${asOf}` : "live") : "from games");
 			};
 			const tc = g.timeClass;
-			const load =
-				g.site === "lichess"
-					? this.host.ratings.lichess(s.lichessUsername)
-					: this.host.ratings.chesscom(s.chesscomUsername, this.host.chesscomUserAgent());
 			if (!navigator.onLine || !tc) {
 				fill(undefined);
 				continue;
 			}
+			const load = g.site === "lichess" ? this.host.ratings.lichess(s.lichessUsername) : this.host.ratings.chesscom(s.chesscomUsername, this.host.chesscomUserAgent());
 			void load.then((r) => fill(r?.[tc])).catch(() => fill(undefined));
 		}
 	}
@@ -325,15 +332,18 @@ export class DashboardView extends ItemView {
 			d.createSpan({ text: ` ${o.delta.text} vs previous` });
 		}
 		o.extra?.(card);
-		if (o.onClick) card.addEventListener("click", (e) => {
-			if ((e.target as HTMLElement).closest("select")) return;
-			o.onClick?.();
-		});
+		if (o.onClick) {
+			card.addEventListener("click", (e) => {
+				if ((e.target as HTMLElement).closest("select")) return;
+				o.onClick?.();
+			});
+		}
 	}
 
-	private renderStatCards(el: HTMLElement, rows: GameRow[], prev: GameRow[] | undefined, eng: ERow[], engPrev: ERow[] | undefined): void {
-		const minPrev = (n: number) => n >= this.minGames();
-		// Score.
+	private renderStatCards(el: HTMLElement, rows: GameRow[], prev: GameRow[] | undefined, accRows: AccuracyRow[], accPrev: AccuracyRow[] | undefined, site: AccuracySite | undefined): void {
+		const enoughPrev = (n: number) => n >= this.minGames();
+		const siteName = site ? SITE_LABEL[site] : "site";
+
 		const sc = scoreFigures(rows);
 		const scPrev = prev ? scoreFigures(prev) : undefined;
 		this.statCard(el, {
@@ -341,10 +351,10 @@ export class DashboardView extends ItemView {
 			value: pct(sc.pct),
 			sub: `W ${sc.wins} · D ${sc.draws} · L ${sc.losses} · ${sc.games} games`,
 			games: sc.games,
-			delta: scPrev?.pct !== undefined && sc.pct !== undefined && minPrev(scPrev.games) ? { value: sc.pct - scPrev.pct, text: `${signed(sc.pct - scPrev.pct)} pts`, goodWhen: "up" } : undefined,
+			delta: scPrev?.pct !== undefined && sc.pct !== undefined && enoughPrev(scPrev.games) ? { value: sc.pct - scPrev.pct, text: `${signed(sc.pct - scPrev.pct)} pts`, goodWhen: "up" } : undefined,
 			onClick: () => this.openList("Score", rows),
 		});
-		// Vs expected.
+
 		const ve = vsExpected(rows);
 		const vePrev = prev ? vsExpected(prev) : undefined;
 		this.statCard(el, {
@@ -352,22 +362,20 @@ export class DashboardView extends ItemView {
 			value: ve.diff !== undefined ? `${signed(ve.diff)} pts` : undefined,
 			sub: ve.per100 !== undefined ? `${signed(ve.per100)} per 100 games` : "",
 			games: ve.games,
-			delta: vePrev?.per100 !== undefined && ve.per100 !== undefined && minPrev(vePrev.games) ? { value: ve.per100 - vePrev.per100, text: `${signed(ve.per100 - vePrev.per100)} per 100`, goodWhen: "up" } : undefined,
+			delta: vePrev?.per100 !== undefined && ve.per100 !== undefined && enoughPrev(vePrev.games) ? { value: ve.per100 - vePrev.per100, text: `${signed(ve.per100 - vePrev.per100)} per 100`, goodWhen: "up" } : undefined,
 			onClick: () => this.openList("Vs expected", rows.filter((g) => g.myRating !== undefined && g.oppRating !== undefined)),
 		});
-		// Performance (per site and time class).
+
 		const groups = siteTimeGroups(rows);
 		const chosen = groups.find((g) => g.id === this.perfGroup) ?? groups[0];
 		const perf = chosen ? performanceOf(chosen.games) : { games: 0 };
-		const prevGroup = chosen && prev ? prev.filter((g) => `${g.site}|${g.timeClass ?? "?"}` === chosen.id) : undefined;
-		const perfPrev = prevGroup ? performanceOf(prevGroup) : undefined;
+		const perfPrev = chosen && prev ? performanceOf(prev.filter((g) => `${g.site}|${g.timeClass ?? "?"}` === chosen.id)) : undefined;
 		this.statCard(el, {
 			title: "Performance",
 			value: perf.rating !== undefined ? String(perf.rating) : undefined,
-			// With several site × time class groups the selector names the group; otherwise the sub-line does.
 			sub: chosen && groups.length < 2 ? groupLabel(chosen) : "",
 			games: perf.games,
-			delta: perfPrev?.rating !== undefined && perf.rating !== undefined && minPrev(perfPrev.games) ? { value: perf.rating - perfPrev.rating, text: signed(perf.rating - perfPrev.rating, 0), goodWhen: "up" } : undefined,
+			delta: perfPrev?.rating !== undefined && perf.rating !== undefined && enoughPrev(perfPrev.games) ? { value: perf.rating - perfPrev.rating, text: signed(perf.rating - perfPrev.rating, 0), goodWhen: "up" } : undefined,
 			onClick: chosen ? () => this.openList(`Performance · ${groupLabel(chosen)}`, chosen.games) : undefined,
 			extra: (card) => {
 				if (groups.length < 2) return;
@@ -380,38 +388,36 @@ export class DashboardView extends ItemView {
 				});
 			},
 		});
-		// Error rate.
-		const er = errorFigures(eng);
-		const erPrev = engPrev ? errorFigures(engPrev) : undefined;
+
+		const a = accuracyFigures(accRows);
+		const aPrev = accPrev ? accuracyFigures(accPrev) : undefined;
 		this.statCard(el, {
-			title: "Error rate",
-			value: er.rate !== undefined ? er.rate.toFixed(2) : undefined,
-			unit: "/ 10 moves",
-			sub: er.medianAcpl !== undefined ? `Median ACPL ${Math.round(er.medianAcpl)}` : "",
-			games: er.games,
-			delta: erPrev?.rate !== undefined && er.rate !== undefined && minPrev(erPrev.games) ? { value: er.rate - erPrev.rate, text: signed(er.rate - erPrev.rate, 2), goodWhen: "down" } : undefined,
-			onClick: () => this.openList("Error rate", eng),
+			title: `Accuracy · ${siteName}`,
+			value: a.mine !== undefined ? acc(a.mine) : undefined,
+			sub: a.median !== undefined ? `Median ${acc(a.median)} · ${a.games} games` : "",
+			games: a.games,
+			delta: aPrev?.mine !== undefined && a.mine !== undefined && enoughPrev(aPrev.games) ? { value: a.mine - aPrev.mine, text: signed(a.mine - aPrev.mine), goodWhen: "up" } : undefined,
+			onClick: () => this.openList(`Games with ${siteName} accuracy`, accRows),
 		});
-		// Weakest phase.
-		const phases = phaseFigures(eng);
-		const weak = weakestPhase(phases);
+
 		this.statCard(el, {
-			title: "Weakest phase",
-			value: weak ? PHASE_LABEL[weak.phase] : "None",
-			sub: weak ? `${weak.myRate?.toFixed(2)} vs opponents' ${weak.oppRate?.toFixed(2)} per 10 moves` : "Needs 20+ of your moves in a phase",
-			games: eng.length,
-			onClick: weak ? () => this.openList(`${PHASE_LABEL[weak.phase]} errors`, eng.filter((g) => g.summary.marks.some((m) => m.side === "me" && m.phase === weak.phase && m.kind !== "inaccuracy"))) : undefined,
+			title: "Accuracy vs opponents",
+			value: a.edge !== undefined ? signed(a.edge) : undefined,
+			sub: a.opp !== undefined ? `Opponents ${acc(a.opp)} in the same games` : "",
+			games: a.edgeGames,
+			delta: aPrev?.edge !== undefined && a.edge !== undefined && enoughPrev(aPrev.edgeGames) ? { value: a.edge - aPrev.edge, text: signed(a.edge - aPrev.edge), goodWhen: "up" } : undefined,
+			onClick: () => this.openList("Accuracy vs opponents", accRows.filter((g) => g.oppAccuracy !== undefined)),
 		});
-		// Conversion.
-		const cv = conversionFigures(eng);
-		const cvPrev = engPrev ? conversionFigures(engPrev) : undefined;
+
+		const t = timeFigures(rows);
+		const tPrev = prev ? timeFigures(prev) : undefined;
 		this.statCard(el, {
-			title: "Conversion",
-			value: cv.conversionPct !== undefined ? `${Math.round(cv.conversionPct)}%` : undefined,
-			sub: `${cv.thrownAway.toFixed(1)} points thrown away`,
-			games: cv.winningGames.length,
-			delta: cvPrev?.conversionPct !== undefined && cv.conversionPct !== undefined && minPrev(cvPrev.winningGames.length) ? { value: cv.conversionPct - cvPrev.conversionPct, text: `${signed(cv.conversionPct - cvPrev.conversionPct)} pts`, goodWhen: "up" } : undefined,
-			onClick: () => this.openList("Reached a winning position", cv.winningGames),
+			title: "Time trouble",
+			value: t.timeTroublePct !== undefined ? `${Math.round(t.timeTroublePct)}%` : undefined,
+			sub: `${t.lostOnTime.length} lost on time · ${t.withClocks.length} games with clocks`,
+			games: t.withClocks.length,
+			delta: tPrev?.timeTroublePct !== undefined && t.timeTroublePct !== undefined && enoughPrev(tPrev.withClocks.length) ? { value: t.timeTroublePct - tPrev.timeTroublePct, text: `${signed(t.timeTroublePct - tPrev.timeTroublePct)} pts`, goodWhen: "down" } : undefined,
+			onClick: () => this.openList("Games in time trouble", t.timeTroubleGames),
 		});
 	}
 
@@ -429,8 +435,18 @@ export class DashboardView extends ItemView {
 		return { body, foot: (text: string) => det.createDiv({ cls: "cr-panel-foot", text }) };
 	}
 
-	private engineFoot(n: number): string {
-		return `${n} game${n === 1 ? "" : "s"} analysed with ${this.host.engineLabel()}.`;
+	private accuracyFoot(n: number, site: AccuracySite | undefined): string {
+		if (!site || !n) return "No games with site accuracy here. Lichess gives accuracy for games analysed on Lichess; chess.com for games with a Game Review.";
+		return `${n} game${n === 1 ? "" : "s"} with ${SITE_LABEL[site]} accuracy (${SITE_LABEL[site]}'s own scale; sites are never mixed).`;
+	}
+
+	private legend(body: HTMLElement, items: Array<[string, string]>): void {
+		const legend = body.createDiv({ cls: "cr-legend" });
+		for (const [name, c] of items) {
+			const l = legend.createSpan({ cls: "cr-legend-item" });
+			l.createSpan({ cls: "cr-swatch-dot", attr: { style: `background:${c}` } });
+			l.appendText(name);
+		}
 	}
 
 	private panelRatingHistory(parent: HTMLElement, rows: GameRow[]): void {
@@ -441,31 +457,25 @@ export class DashboardView extends ItemView {
 			return;
 		}
 		const colours = ["var(--cr-c1)", "var(--cr-c2)", "var(--cr-c3)", "var(--cr-c4)", "var(--cr-c5)"];
-		const legend = body.createDiv({ cls: "cr-legend" });
-		const series = hist.slice(0, 5).map((h, i) => {
-			const l = legend.createSpan({ cls: "cr-legend-item" });
-			l.createSpan({ cls: "cr-swatch-dot", attr: { style: `background:${colours[i]}` } });
-			l.appendText(groupLabel(h.group));
-			return {
+		const shown = hist.slice(0, 5);
+		this.legend(body, shown.map((h, i) => [groupLabel(h.group), colours[i]] as [string, string]));
+		lineChart(
+			body.createDiv({ cls: "cr-chart-box" }),
+			shown.map((h, i) => ({
 				name: groupLabel(h.group),
 				color: colours[i],
 				points: h.points.map((g) => ({ x: dayNum(g.date), y: g.myRating as number, data: g, tip: `${g.date} · ${g.myRating} · vs ${g.opponent} (${g.oppRating ?? "?"}) · ${g.myResult}` })),
-			};
-		});
-		lineChart(body.createDiv({ cls: "cr-chart-box" }), series, {
-			tip: this.tip,
-			xFormat: fmtDay,
-			onClick: (p) => this.host.openGame(p.data),
-		});
+			})),
+			{ tip: this.tip, xFormat: fmtDay, onClick: (p) => this.host.openGame(p.data) },
+		);
 	}
 
 	private panelBands(parent: HTMLElement, rows: GameRow[]): void {
 		const { body, foot } = this.panel(parent, "Against stronger and weaker", "Do I underperform against a kind of opponent?");
-		const bands = bandFigures(rows);
 		const min = this.minGames();
 		barChart<BandFigures>(
 			body.createDiv({ cls: "cr-chart-box" }),
-			bands.map((b) => ({
+			bandFigures(rows).map((b) => ({
 				label: BAND_LABEL[b.band],
 				sub: `${b.games.length} games`,
 				muted: b.games.length < min,
@@ -477,18 +487,13 @@ export class DashboardView extends ItemView {
 			})),
 			{ tip: this.tip, max: 100, format: (v) => `${Math.round(v)}`, onClick: (g) => this.setFilters({ ...this.filters, bands: [g.data.band] }) },
 		);
-		const legend = body.createDiv({ cls: "cr-legend" });
-		for (const [name, c] of [["Actual score %", "var(--cr-c1)"], ["Expected score %", "var(--cr-c2)"]]) {
-			const l = legend.createSpan({ cls: "cr-legend-item" });
-			l.createSpan({ cls: "cr-swatch-dot", attr: { style: `background:${c}` } });
-			l.appendText(name);
-		}
+		this.legend(body, [["Actual score %", "var(--cr-c1)"], ["Expected score %", "var(--cr-c2)"]]);
 		foot("Opponent − my rating, pre-game, same site. Click a band to filter.");
 	}
 
-	private panelOpenings(parent: HTMLElement, rows: GameRow[], eng: ERow[]): void {
-		const { body, foot } = this.panel(parent, "Openings", "Which openings cost me points, and is it the opening or the play after it?", "is-wide");
-		const table = openingTable(rows, this.host.engineLabel());
+	private panelOpenings(parent: HTMLElement, rows: GameRow[], site: AccuracySite | undefined): void {
+		const { body, foot } = this.panel(parent, "Openings", "Which openings cost me points?", "is-wide");
+		const table = openingTable(rows, site);
 		if (!table.length) {
 			body.createDiv({ cls: "cr-empty", text: "No games in this selection." });
 			return;
@@ -496,7 +501,7 @@ export class DashboardView extends ItemView {
 		const wrap = body.createDiv({ cls: "cr-table-wrap" });
 		const t = wrap.createEl("table", { cls: "cr-table" });
 		const head = t.createEl("thead").createEl("tr");
-		for (const h of ["Opening", "Games", "Score", "Vs expected", "Eval after move 15", "Opening errors / 10"]) head.createEl("th", { text: h });
+		for (const h of ["Opening", "Games", "Score", "Vs expected", site ? `Accuracy (${SITE_LABEL[site]})` : "Accuracy"]) head.createEl("th", { text: h });
 		const tb = t.createEl("tbody");
 		const min = this.minGames();
 		let colour: string | undefined;
@@ -519,88 +524,80 @@ export class DashboardView extends ItemView {
 			tr.createEl("td", { text: String(r.games.length) });
 			tr.createEl("td", { text: enough ? pct(r.scorePct) : "–" });
 			tr.createEl("td", { text: enough && r.vsExpected !== undefined ? signed(r.vsExpected) : "–" });
-			tr.createEl("td", { text: enough && r.outcomePawns !== undefined ? signed(r.outcomePawns, 2) : "–" });
-			tr.createEl("td", { text: enough && r.openingErrorRate !== undefined ? r.openingErrorRate.toFixed(2) : "–" });
+			tr.createEl("td", { text: r.accuracyGames >= min ? `${acc(r.accuracy)} (${r.accuracyGames})` : r.accuracyGames ? `${r.accuracyGames} games` : "–" });
 			tr.addEventListener("click", () => this.setFilters({ ...this.filters, families: [r.family] }));
 		};
 		for (const r of table) {
 			if (r.colour !== colour) {
 				colour = r.colour;
 				const tr = tb.createEl("tr", { cls: "cr-group-row" });
-				tr.createEl("td", { text: `As ${r.colour}`, attr: { colspan: "6" } });
+				tr.createEl("td", { text: `As ${r.colour}`, attr: { colspan: "5" } });
 			}
 			addRow(r, false);
 			if (r.variations && this.expanded.has(`${r.colour}|${r.family}`)) for (const v of r.variations) addRow(v, true);
 		}
-		foot(`Good eval but poor score = the problem is after the opening. Evals and error rates from ${eng.length} analysed games.`);
+		foot("A poor score with good accuracy points to the opposition you meet in that opening; poor accuracy points to your play. Click a row to filter.");
 	}
 
-	private panelConversion(parent: HTMLElement, eng: ERow[]): void {
-		const { body, foot } = this.panel(parent, "Conversion and saves", "Do I win won games and save lost ones?");
-		const c = conversionFigures(eng);
+	private panelAccuracyByResult(parent: HTMLElement, accRows: AccuracyRow[], site: AccuracySite | undefined): void {
+		const { body, foot } = this.panel(parent, "Accuracy by result", "How well do I play when I win, draw and lose?");
 		const min = this.minGames();
-		const figs = body.createDiv({ cls: "cr-figs" });
-		const fig = (label: string, v: number | undefined, n: number, games: GameRow[]) => {
-			const f = figs.createDiv({ cls: "cr-fig is-clickable" + (n >= min ? "" : " is-muted") });
-			f.createDiv({ cls: "cr-fig-value", text: n >= min && v !== undefined ? `${Math.round(v)}%` : `${n} games` });
-			f.createDiv({ cls: "cr-fig-label", text: `${label} · ${n} games` });
-			f.addEventListener("click", () => this.openList(label, games));
-		};
-		fig("Conversion", c.conversionPct, c.winningGames.length, c.winningGames);
-		fig("Saves", c.savePct, c.losingGames.length, c.losingGames);
-		const lf = figs.createDiv({ cls: "cr-fig" });
-		lf.createDiv({ cls: "cr-fig-value", text: c.thrownAway.toFixed(1) });
-		lf.createDiv({ cls: "cr-fig-label", text: "points thrown away" });
-		if (c.notConverted.length) {
-			const list = body.createDiv({ cls: "cr-list" });
-			list.createDiv({ cls: "cr-list-title", text: "Winning, not won" });
-			for (const g of c.notConverted.slice(0, 10)) {
-				const row = list.createDiv({ cls: "cr-list-row is-clickable" });
-				row.createSpan({ text: g.date });
-				row.createSpan({ cls: "cr-grow", text: `vs ${g.opponent}` });
-				row.createSpan({ text: `peak ${signed(g.summary.myPeakEvalCp / 100)}` });
-				row.createSpan({ cls: `cr-result is-${g.myResult}`, text: g.myResult });
-				row.addEventListener("click", () => this.host.openGame(g, g.summary.peakPly ?? undefined));
-			}
-		}
-		foot(this.engineFoot(eng.length));
-	}
-
-	private panelPhases(parent: HTMLElement, eng: ERow[]): void {
-		const { body, foot } = this.panel(parent, "Errors by phase", "In which phase do I go wrong?");
-		const phases = phaseFigures(eng);
-		const showInacc = this.host.settings().dashboardShowInaccuracies;
 		barChart(
 			body.createDiv({ cls: "cr-chart-box" }),
-			phases.map((p) => ({
-				label: PHASE_LABEL[p.phase],
-				sub: `${p.myMoves} of my moves`,
-				data: p,
-				muted: p.myMoves < 10,
+			accuracyByResult(accRows).map((s) => ({
+				label: RESULT_LABEL[s.key],
+				sub: `${s.games.length} games`,
+				muted: s.games.length < min,
+				data: s,
 				bars: [
-					{ name: "Mine", value: p.myRate, color: "var(--cr-c1)", tip: `My errors ${p.myRate?.toFixed(2) ?? "–"} / 10 moves (${p.myErrors} in ${p.myMoves})` },
-					{ name: "Opponents", value: p.oppRate, color: "var(--cr-c2)", tip: `Opponents ${p.oppRate?.toFixed(2) ?? "–"} / 10 moves (${p.oppErrors} in ${p.oppMoves})` },
-					...(showInacc ? [{ name: "My inaccuracies", value: p.myInaccuracyRate, color: "var(--cr-c3)", tip: `My inaccuracies ${p.myInaccuracyRate?.toFixed(2) ?? "–"} / 10 moves` }] : []),
+					{ name: "Me", value: s.games.length >= min ? s.mine : undefined, color: "var(--cr-c1)", tip: `My accuracy ${acc(s.mine)} · ${s.games.length} games` },
+					{ name: "Opponents", value: s.games.length >= min ? s.opp : undefined, color: "var(--cr-c2)", tip: `Opponents ${acc(s.opp)}` },
 				],
 			})),
-			{
-				tip: this.tip,
-				format: (v) => v.toFixed(2),
-				onClick: (g) => this.openList(`${PHASE_LABEL[g.data.phase]}: games with my errors`, eng.filter((x) => x.summary.marks.some((m) => m.side === "me" && m.phase === g.data.phase && m.kind !== "inaccuracy"))),
-			},
+			{ tip: this.tip, max: 100, format: (v) => v.toFixed(0), onClick: (g) => this.openList(`${RESULT_LABEL[g.data.key]} with accuracy`, g.data.games) },
 		);
-		const legend = body.createDiv({ cls: "cr-legend" });
-		for (const [name, c] of [["My errors / 10 moves", "var(--cr-c1)"], ["Opponents' (same games)", "var(--cr-c2)"], ...(showInacc ? [["My inaccuracies", "var(--cr-c3)"]] : [])]) {
-			const l = legend.createSpan({ cls: "cr-legend-item" });
-			l.createSpan({ cls: "cr-swatch-dot", attr: { style: `background:${c}` } });
-			l.appendText(name);
-		}
-		foot(this.engineFoot(eng.length));
+		this.legend(body, [["My accuracy", "var(--cr-c1)"], ["Opponents' (same games)", "var(--cr-c2)"]]);
+		foot(this.accuracyFoot(accRows.length, site));
 	}
 
-	private panelTime(parent: HTMLElement, eng: ERow[]): void {
+	private panelAccuracyByTimeClass(parent: HTMLElement, accRows: AccuracyRow[], rows: GameRow[], site: AccuracySite | undefined): void {
+		const { body, foot } = this.panel(parent, "Accuracy by time control", "Where do I play my best chess?");
+		const min = this.minGames();
+		const split = accuracyByTimeClass(accRows);
+		if (!split.length) {
+			body.createDiv({ cls: "cr-empty", text: "No games with site accuracy in this selection." });
+		} else {
+			barChart(
+				body.createDiv({ cls: "cr-chart-box" }),
+				split.map((s) => ({
+					label: cap(s.key),
+					sub: `${s.games.length} games`,
+					muted: s.games.length < min,
+					data: s,
+					bars: [
+						{ name: "Me", value: s.games.length >= min ? s.mine : undefined, color: "var(--cr-c1)", tip: `My accuracy ${acc(s.mine)} · ${s.games.length} games` },
+						{ name: "Opponents", value: s.games.length >= min ? s.opp : undefined, color: "var(--cr-c2)", tip: `Opponents ${acc(s.opp)}` },
+					],
+				})),
+				{ tip: this.tip, max: 100, format: (v) => v.toFixed(0), onClick: (g) => this.openList(`${cap(g.data.key)} games with accuracy`, g.data.games) },
+			);
+			this.legend(body, [["My accuracy", "var(--cr-c1)"], ["Opponents'", "var(--cr-c2)"]]);
+		}
+		const j = siteJudgements(rows);
+		if (j.games) {
+			const line = body.createDiv({ cls: "cr-figs" });
+			for (const [label, v] of [["inaccuracies", j.inaccuracies], ["mistakes", j.mistakes], ["blunders", j.blunders]] as Array<[string, number | undefined]>) {
+				const f = line.createDiv({ cls: "cr-fig" + (j.games >= min ? "" : " is-muted") });
+				f.createDiv({ cls: "cr-fig-value", text: j.games >= min && v !== undefined ? v.toFixed(2) : "–" });
+				f.createDiv({ cls: "cr-fig-label", text: `${label} per game` });
+			}
+			foot(`${this.accuracyFoot(accRows.length, site)} Per-game counts are Lichess's own judgements in ${j.games} analysed Lichess games.`);
+		} else foot(this.accuracyFoot(accRows.length, site));
+	}
+
+	private panelTime(parent: HTMLElement, rows: GameRow[]): void {
 		const { body, foot } = this.panel(parent, "Time management", "Does the clock cost me points?");
-		const t = timeFigures(eng);
+		const t = timeFigures(rows);
 		const min = this.minGames();
 		const n = t.withClocks.length;
 		const figs = body.createDiv({ cls: "cr-figs" });
@@ -613,101 +610,100 @@ export class DashboardView extends ItemView {
 		fig(pct(t.timeTroublePct), `games in time trouble (${t.timeTroubleGames.length})`, t.timeTroubleGames);
 		fig(t.medianFirst10 !== undefined ? `${Math.round(t.medianFirst10)} s` : "–", "median on my first 10 moves", t.withClocks);
 		fig(String(t.lostOnTime.length), "losses on time", t.lostOnTime);
+		const trouble = t.timeTroubleGames;
+		const calm = t.withClocks.filter((g) => !g.timeTrouble);
 		barChart(
 			body.createDiv({ cls: "cr-chart-box" }),
 			[
-				{ label: "Under pressure", sub: `${t.pressureMoves} moves`, data: "pressure", bars: [{ name: "Error rate", value: t.pressureRate, color: "var(--cr-c1)", tip: `${t.pressureRate?.toFixed(2) ?? "–"} errors / 10 moves · ${t.pressureMoves} moves` }] },
-				{ label: "Not under pressure", sub: `${t.calmMoves} moves`, data: "calm", bars: [{ name: "Error rate", value: t.calmRate, color: "var(--cr-c2)", tip: `${t.calmRate?.toFixed(2) ?? "–"} errors / 10 moves · ${t.calmMoves} moves` }] },
+				{ label: "In time trouble", sub: `${trouble.length} games`, muted: trouble.length < min, data: trouble, bars: [{ name: "Score", value: trouble.length >= min ? t.scoreInTrouble : undefined, color: "var(--cr-c1)", tip: `Score ${pct(t.scoreInTrouble)} · ${trouble.length} games` }] },
+				{ label: "Not in time trouble", sub: `${calm.length} games`, muted: calm.length < min, data: calm, bars: [{ name: "Score", value: calm.length >= min ? t.scoreWithout : undefined, color: "var(--cr-c2)", tip: `Score ${pct(t.scoreWithout)} · ${calm.length} games` }] },
 			],
-			{ tip: this.tip, height: 140, format: (v) => v.toFixed(2), onClick: () => this.openList("Games with clocks", t.withClocks) },
+			{ tip: this.tip, height: 140, max: 100, format: (v) => `${Math.round(v)}%`, onClick: (g) => this.openList(g.label, g.data) },
 		);
-		foot(`${t.withoutClocks} game${t.withoutClocks === 1 ? "" : "s"} without clocks not included. ${this.engineFoot(n)}`);
+		foot(`Score % with and without time trouble (clock below 10% of base time or 30 s). ${t.withoutClocks} game${t.withoutClocks === 1 ? "" : "s"} without clocks not included.`);
 	}
 
-	private panelTrend(parent: HTMLElement, eng: ERow[]): void {
-		const { body, foot } = this.panel(parent, "Trend", "Am I playing cleaner over time?");
-		const points = trend(eng);
+	private panelTrend(parent: HTMLElement, accRows: AccuracyRow[], site: AccuracySite | undefined): void {
+		const { body, foot } = this.panel(parent, "Trend", "Am I playing more accurately over time?");
+		const points = accuracyTrend(accRows);
 		if (!points.length) {
-			body.createDiv({ cls: "cr-empty", text: `Needs 20 or more analysed games (${eng.length} so far).` });
+			body.createDiv({ cls: "cr-empty", text: `Needs 20 or more games with site accuracy (${accRows.length} so far).` });
+			foot(this.accuracyFoot(accRows.length, site));
 			return;
 		}
 		lineChart(
 			body.createDiv({ cls: "cr-chart-box" }),
 			[
-				{ name: "Error rate", color: "var(--cr-c1)", points: points.filter((p) => p.errorRate !== undefined).map((p) => ({ x: p.index, y: p.errorRate as number, data: p, tip: `Games ${p.index - 18}–${p.index + 1} · ${p.errorRate?.toFixed(2)} errors / 10 moves` })) },
+				{ name: "Accuracy", color: "var(--cr-c1)", points: points.filter((p) => p.accuracy !== undefined).map((p) => ({ x: p.index, y: p.accuracy as number, data: p, tip: `20 games to ${p.date} · accuracy ${acc(p.accuracy)} · score ${pct(p.scorePct)}` })) },
 				{ name: "Score %", color: "var(--cr-c2)", axis: "right", thin: true, dots: false, points: points.filter((p) => p.scorePct !== undefined).map((p) => ({ x: p.index, y: p.scorePct as number, data: p, tip: `Score ${pct(p.scorePct)}` })) },
 			],
-			{ tip: this.tip, yFormat: (v) => v.toFixed(1), y2Format: (v) => `${Math.round(v)}%`, onClick: (p) => this.openList(`20 games ending ${p.data.date}`, p.data.games) },
+			{ tip: this.tip, yFormat: (v) => v.toFixed(0), y2Format: (v) => `${Math.round(v)}%`, onClick: (p) => this.openList(`20 games ending ${p.data.date}`, p.data.games) },
 		);
-		foot(`Rolling 20-game error rate (left) and score % (right, thin). ${this.engineFoot(eng.length)}`);
+		foot(`Rolling 20-game accuracy (left) and score % (right, thin). ${this.accuracyFoot(accRows.length, site)}`);
 	}
 
-	private panelSwings(parent: HTMLElement, eng: ERow[]): void {
-		const { body, foot } = this.panel(parent, "Biggest swings", "What were my worst single moves?");
-		const swings = biggestSwings(eng);
-		if (!swings.length) {
-			body.createDiv({ cls: "cr-empty", text: "No mistakes found in the analysed games." });
+	private panelLowest(parent: HTMLElement, accRows: AccuracyRow[], site: AccuracySite | undefined): void {
+		const { body, foot } = this.panel(parent, "Least accurate games", "Which games did I play worst?");
+		const games = lowestAccuracy(accRows);
+		if (!games.length) {
+			body.createDiv({ cls: "cr-empty", text: "No games with site accuracy in this selection." });
+			foot(this.accuracyFoot(0, site));
 			return;
 		}
 		const wrap = body.createDiv({ cls: "cr-table-wrap" });
 		const t = wrap.createEl("table", { cls: "cr-table" });
 		const head = t.createEl("thead").createEl("tr");
-		for (const h of ["Date", "Opponent", "Move", "Phase", "Eval", "Clock"]) head.createEl("th", { text: h });
+		for (const h of ["Date", "Opponent", "Result", "My accuracy", "Theirs"]) head.createEl("th", { text: h });
 		const tb = t.createEl("tbody");
-		for (const s of swings) {
+		for (const g of games) {
 			const tr = tb.createEl("tr", { cls: "is-clickable" });
-			tr.createEl("td", { text: s.game.date });
-			tr.createEl("td", { text: s.game.opponent });
-			tr.createEl("td", { text: `${s.moveNumber}${s.mark.ply % 2 === 1 ? "." : "…"}` });
-			tr.createEl("td", { text: PHASE_LABEL[s.mark.phase] });
-			tr.createEl("td", { text: `${signed(s.mark.evalBeforeCp / 100)} → ${signed(s.mark.evalAfterCp / 100)}` });
-			tr.createEl("td", { text: s.mark.clockSec !== undefined ? fmtClock(s.mark.clockSec) : "–" });
-			tr.addEventListener("click", () => this.host.openGame(s.game, s.mark.ply));
+			tr.createEl("td", { text: g.date });
+			tr.createEl("td", { text: g.opponent });
+			tr.createEl("td", { cls: `cr-result is-${g.myResult}`, text: g.myResult });
+			tr.createEl("td", { text: acc(g.myAccuracy) });
+			tr.createEl("td", { text: acc(g.oppAccuracy) });
+			tr.addEventListener("click", () => this.host.openGame(g));
 		}
-		foot(this.engineFoot(eng.length));
+		foot(this.accuracyFoot(accRows.length, site));
 	}
 
-	private panelQueue(parent: HTMLElement, eng: ERow[]): void {
+	private panelQueue(parent: HTMLElement, rows: GameRow[]): void {
 		const { body, foot } = this.panel(parent, "Review queue", "Which games should I review next?");
-		const q = reviewQueue(eng);
+		const q = reviewQueue(rows);
 		if (!q.length) {
-			body.createDiv({ cls: "cr-empty", text: "Nothing to review: every analysed game here is marked reviewed." });
+			body.createDiv({ cls: "cr-empty", text: "Nothing to review: no unreviewed games here with both players' accuracy." });
 			return;
 		}
 		const wrap = body.createDiv({ cls: "cr-table-wrap" });
 		const t = wrap.createEl("table", { cls: "cr-table" });
 		const head = t.createEl("thead").createEl("tr");
-		for (const h of ["Date", "Opponent", "Result", "Biggest swing", ""]) head.createEl("th", { text: h });
+		for (const h of ["Date", "Opponent", "Result", "Accuracy", ""]) head.createEl("th", { text: h });
 		const tb = t.createEl("tbody");
 		for (const item of q) {
 			const g = item.game;
 			const tr = tb.createEl("tr", { cls: "is-clickable" });
 			tr.createEl("td", { text: g.date });
-			tr.createEl("td", { text: g.opponent });
+			const opp = tr.createEl("td");
+			opp.createDiv({ text: g.opponent });
+			opp.createDiv({ cls: "cr-td-sub", text: SITE_LABEL[g.site] });
 			tr.createEl("td", { cls: `cr-result is-${g.myResult}`, text: g.myResult });
-			tr.createEl("td", { text: g.summary.biggestSwing ? `${Math.round(g.summary.biggestSwing.deltaW * 50)}% (move ${Math.ceil(g.summary.biggestSwing.ply / 2)})` : "–" });
+			tr.createEl("td", { text: `${Math.round(g.myAccuracy)} – ${Math.round(g.oppAccuracy)}`, attr: { title: "My accuracy – my opponent's" } });
 			const td = tr.createEl("td");
-			const b = td.createEl("button", { cls: "cr-mark-btn", text: "Mark reviewed" });
+			const b = td.createEl("button", { cls: "cr-mark-btn", text: "Reviewed", attr: { "aria-label": "Mark reviewed" } });
 			b.addEventListener("click", async (e) => {
 				e.stopPropagation();
 				b.disabled = true;
 				await this.host.markReviewed(g);
 				this.host.index.invalidate(true);
 			});
-			tr.addEventListener("click", () => this.host.openGame(g, g.summary.biggestSwing?.ply));
+			tr.addEventListener("click", () => this.host.openGame(g));
 		}
-		foot(`Ranked by biggest swing, +0.5 if lost, +0.25 if a winning position was not won. ${this.engineFoot(eng.length)}`);
+		foot("Ranked by how much less accurate I was than my opponent in the same game (points ÷ 10, up to 2), +0.5 if I lost.");
 	}
 
 	private openList(title: string, games: GameRow[]): void {
 		new GameListModal(this.app, title, games, (g) => this.host.openGame(g)).open();
 	}
-}
-
-function fmtClock(s: number): string {
-	const m = Math.floor(s / 60);
-	const sec = Math.floor(s % 60);
-	return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
 /** The games behind a figure: sortable, each row opens the note. */
@@ -734,7 +730,7 @@ export class GameListModal extends Modal {
 			["ratings", "Ratings", (g) => `${g.myRating ?? "?"} – ${g.oppRating ?? "?"}`],
 			["result", "Result", (g) => g.myResult],
 			["opening", "Opening", (g) => g.opening ?? g.eco ?? ""],
-			["errors", "Errors", (g) => (g.summary ? g.summary.marks.filter((m) => m.side === "me" && m.kind !== "inaccuracy").length : "–")],
+			["accuracy", "Accuracy", (g) => (g.myAccuracy !== undefined ? g.myAccuracy : "–")],
 			["reviewed", "Reviewed", (g) => (g.reviewed ? "yes" : "")],
 		];
 		const wrap = contentEl.createDiv({ cls: "cr-table-wrap" });

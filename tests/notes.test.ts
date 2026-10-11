@@ -12,7 +12,7 @@ import {
 	replaceRegion,
 } from "../src/notes/noteWriter";
 import { applyOwnedKeys, changedKeys, displayTimeControl, formatTimeControl, newNoteFrontmatter, SYNC_KEYS, syncFrontmatter } from "../src/notes/frontmatter";
-import { normaliseLichess } from "../src/sources/normalise";
+import { normaliseChesscom, normaliseLichess } from "../src/sources/normalise";
 import { lichessGame } from "./helpers";
 import type { GameRecord } from "../src/types";
 
@@ -154,5 +154,42 @@ describe("time control as the sites show it", () => {
 	});
 	it("is what new notes store", () => {
 		expect(syncFrontmatter(record())["time-control"]).toBe("10+5");
+	});
+});
+
+describe("site accuracy and clock keys", () => {
+	it("Lichess: accuracy and judgements for both sides, clock stats from the PGN", () => {
+		const g = lichessGame("acc12345", Date.parse("2026-10-04T18:22:10Z"), {
+			players: {
+				white: { user: { name: "ethem", id: "ethem" }, rating: 2004, analysis: { inaccuracy: 3, mistake: 1, blunder: 0, acpl: 31, accuracy: 88.4 } },
+				black: { user: { name: "opp", id: "opp" }, rating: 1987, analysis: { inaccuracy: 2, mistake: 2, blunder: 1, acpl: 52, accuracy: 79.1 } },
+			},
+		});
+		const n = normaliseLichess(g as never, "ethem");
+		if (!n.ok) throw new Error("bad fixture");
+		const fm = syncFrontmatter(n.record);
+		expect(fm).toMatchObject({ "site-accuracy": 88.4, "opp-accuracy": 79.1, "site-inaccuracies": 3, "site-mistakes": 1, "site-blunders": 0, "site-acpl": 31 });
+		// The helper's PGN has no TimeControl tag, so time trouble cannot be judged (real exports have it).
+		expect(fm["time-trouble"]).toBeUndefined();
+		expect(fm["first-10-seconds"]).toBeUndefined();
+	});
+	it("no analysis on Lichess means no accuracy keys", () => {
+		const n = normaliseLichess(lichessGame("noacc123", Date.parse("2026-10-04T18:22:10Z")) as never, "ethem");
+		if (!n.ok) throw new Error("bad fixture");
+		const fm = syncFrontmatter(n.record);
+		expect(fm["site-accuracy"]).toBeUndefined();
+		expect(fm["opp-accuracy"]).toBeUndefined();
+		expect(fm["site-blunders"]).toBeUndefined();
+	});
+	it("chess.com: accuracies for me and my opponent", () => {
+		const n = normaliseChesscom({
+			uuid: "u1", url: "https://www.chess.com/game/live/1", rules: "chess", time_class: "rapid", time_control: "600", rated: true,
+			pgn: '[White "ethem"]\n[Black "opp"]\n[Result "1-0"]\n[TimeControl "600"]\n\n1. e4 {[%clk 0:09:58]} 1... e5 {[%clk 0:09:50]} 2. Qh5 {[%clk 0:00:20]} 1-0',
+			white: { username: "ethem", rating: 2000, result: "win" }, black: { username: "opp", rating: 1990, result: "resigned" },
+			accuracies: { white: 91.2, black: 70.4 },
+		}, "ethem");
+		if (!n.ok) throw new Error("bad fixture");
+		const fm = syncFrontmatter(n.record);
+		expect(fm).toMatchObject({ "site-accuracy": 91.2, "opp-accuracy": 70.4, "time-trouble": true });
 	});
 });
