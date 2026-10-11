@@ -1,0 +1,42 @@
+# Publishes the Stockfish 18 lite single-threaded WASM build as a release asset,
+# so the plugin can download it on first use (community installs only ship
+# main.js, manifest.json and styles.css). Run manually once per engine version.
+name: Engine release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Fetch Stockfish
+        run: |
+          mkdir sf && cd sf
+          npm pack stockfish@18.0.8
+          tar xzf stockfish-18.0.8.tgz
+          cp package/bin/stockfish-18-lite-single.js package/bin/stockfish-18-lite-single.wasm ..
+      - name: Verify hashes match the plugin's constants
+        run: |
+          node -e '
+            const fs = require("fs"), crypto = require("crypto");
+            const src = fs.readFileSync("src/engine/engineFiles.ts", "utf8");
+            for (const f of ["stockfish-18-lite-single.js", "stockfish-18-lite-single.wasm"]) {
+              const h = crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex");
+              if (!src.includes(h)) { console.error("hash mismatch for " + f + ": " + h); process.exit(1); }
+              console.log(f, h);
+            }'
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create engine-sf18 --title "Stockfish 18 lite (engine files)" \
+            --notes "Engine files downloaded by the plugin on first use. GPL-3.0, from the stockfish npm package 18.0.8 (Stockfish.js by Nathan Rugg)." \
+            stockfish-18-lite-single.js stockfish-18-lite-single.wasm
