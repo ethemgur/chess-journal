@@ -5,10 +5,23 @@ import { CODE_LANG, replaceBlockBody } from "../notes/noteWriter";
 import { PgnParseError, pgnHash } from "../pgn/tree";
 import { matchMyColour, pgnTags } from "../sources/normalise";
 import type { Colour } from "../types";
-import { BlockState, BoardView, newBlockState } from "./BoardView";
+import { BlockState, BoardHost, BoardView, newBlockState } from "./BoardView";
 
 /** Block state survives re-renders (e.g. after our own write-back). */
 const blockStates = new Map<string, BlockState>();
+
+/**
+ * Boards on screen, by block. When a block is re-rendered because the note
+ * changed (most often our own write-back), the new block adopts the existing
+ * board instead of building a new one, so the board never flashes.
+ */
+interface LiveBoard {
+	view: BoardView;
+	owner: ChessGameBlock;
+	destroyTimer?: number;
+}
+const liveBoards = new Map<string, LiveBoard>();
+const ADOPT_GRACE_MS = 3000;
 
 export function registerChessGameBlock(plugin: ChessReviewPlugin): void {
 	plugin.registerMarkdownCodeBlockProcessor(CODE_LANG, (source, el, ctx) => {
@@ -17,6 +30,11 @@ export function registerChessGameBlock(plugin: ChessReviewPlugin): void {
 }
 
 export function clearBlockStates(): void {
+	for (const live of liveBoards.values()) {
+		window.clearTimeout(live.destroyTimer);
+		live.view.destroy();
+	}
+	liveBoards.clear();
 	blockStates.clear();
 }
 
@@ -24,6 +42,7 @@ class ChessGameBlock extends MarkdownRenderChild {
 	private view?: BoardView;
 	private observer?: IntersectionObserver;
 	private source: string;
+	private key?: string;
 
 	constructor(private plugin: ChessReviewPlugin, source: string, el: HTMLElement, private ctx: MarkdownPostProcessorContext) {
 		super(el);
@@ -57,7 +76,17 @@ class ChessGameBlock extends MarkdownRenderChild {
 
 	onunload(): void {
 		this.observer?.disconnect();
-		this.view?.destroy();
+		const live = this.key ? liveBoards.get(this.key) : undefined;
+		if (this.view && live && live.owner === this) {
+			// Keep the board alive briefly in case the re-rendered block adopts it.
+			const key = this.key as string;
+			live.destroyTimer = window.setTimeout(() => {
+				if (liveBoards.get(key) === live) liveBoards.delete(key);
+				live.view.destroy();
+			}, ADOPT_GRACE_MS);
+		} else if (this.view && !live) {
+			this.view.destroy();
+		}
 		this.view = undefined;
 	}
 
@@ -87,6 +116,7 @@ class ChessGameBlock extends MarkdownRenderChild {
 
 	private renderBoard(): void {
 		const key = this.stateKey();
+		this.key = key;
 		let state = blockStates.get(key);
 		if (!state) {
 			state = newBlockState();
@@ -95,21 +125,37 @@ class ChessGameBlock extends MarkdownRenderChild {
 		const fm = this.frontmatter();
 		const gameKey = typeof fm?.["game-key"] === "string" ? (fm["game-key"] as string) : undefined;
 		const plugin = this.plugin;
+		const host = (): BoardHost => ({
+			app: plugin.app,
+			settings: () => plugin.settings,
+			engine: plugin.engine,
+			gameKey,
+			myColour: this.myColour(fm),
+			state,
+			loadAnalysis: async () => (gameKey ? plugin.cache.get(gameKey) : undefined),
+			onAnalysisChange: (fn) => plugin.cache.onChange((k) => k === gameKey && fn()),
+			save: (pgn) => this.save(pgn, gameKey),
+			askDownloadEngine: () => plugin.confirmEngineDownload(),
+			setActive: (v) => plugin.setActiveBoard(v),
+		});
+		const live = liveBoards.get(key);
+		if (live && pgnHash(live.view.savedPgn()) === pgnHash(this.source)) {
+			window.clearTimeout(live.destroyTimer);
+			live.destroyTimer = undefined;
+			live.owner = this;
+			this.view = live.view;
+			this.view.adopt(this.containerEl, host());
+			return;
+		}
+		if (live) {
+			window.clearTimeout(live.destroyTimer);
+			if (live.owner !== this) live.view.destroy();
+			liveBoards.delete(key);
+		}
 		try {
-			this.view = new BoardView(this.containerEl, this.source, {
-				app: plugin.app,
-				settings: () => plugin.settings,
-				engine: plugin.engine,
-				gameKey,
-				myColour: this.myColour(fm),
-				state,
-				loadAnalysis: async () => (gameKey ? plugin.cache.get(gameKey) : undefined),
-				onAnalysisChange: (fn) => plugin.cache.onChange((k) => k === gameKey && fn()),
-				save: (pgn) => this.save(pgn, gameKey),
-				askDownloadEngine: () => plugin.confirmEngineDownload(),
-				setActive: (v) => plugin.setActiveBoard(v),
-			});
+			this.view = new BoardView(this.containerEl, this.source, host());
 			this.view.render();
+			liveBoards.set(key, { view: this.view, owner: this });
 		} catch (e) {
 			this.renderError(e);
 		}

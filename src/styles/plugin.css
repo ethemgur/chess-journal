@@ -30,40 +30,66 @@
 	-webkit-user-select: none;
 }
 
+/* Grid: the side panel spans exactly the board row, so its top and bottom
+   line up with the board. */
 .cr-main {
-	display: flex;
-	gap: 12px;
-	align-items: stretch;
+	display: grid;
+	grid-template-columns: minmax(0, 480px) minmax(220px, 1fr);
+	grid-template-areas:
+		"top ."
+		"board side"
+		"bottom ."
+		"controls ."
+		"draw ."
+		"graph .";
+	column-gap: 12px;
 }
 
-.cr-left {
-	flex: 0 1 480px;
-	min-width: 0;
+.cr-player-top {
+	grid-area: top;
+}
+
+.cr-board-row {
+	grid-area: board;
+}
+
+.cr-player-bottom {
+	grid-area: bottom;
+}
+
+.cr-controls {
+	grid-area: controls;
+}
+
+.cr-drawbar {
+	grid-area: draw;
+}
+
+.cr-graph {
+	grid-area: graph;
 }
 
 .cr-side {
-	flex: 1 1 240px;
-	min-width: 220px;
+	grid-area: side;
+	/* Take the board row's height; never stretch it. */
+	contain: size;
+	min-height: 0;
 	display: flex;
 	flex-direction: column;
-	max-height: 600px;
 	background: var(--background-secondary);
 	border-radius: 4px;
 	overflow: hidden;
 }
 
 .cr-narrow .cr-main {
-	flex-direction: column;
-}
-
-.cr-narrow .cr-left {
-	flex-basis: auto;
-	width: 100%;
+	grid-template-columns: minmax(0, 1fr);
+	grid-template-areas: "top" "board" "bottom" "controls" "draw" "graph" "side";
 }
 
 .cr-narrow .cr-side {
-	width: 100%;
+	contain: none;
 	max-height: 340px;
+	margin-top: 8px;
 }
 
 /* ---------------- Players and clocks ---------------- */
@@ -73,7 +99,7 @@
 	align-items: center;
 	gap: 6px;
 	min-height: 28px;
-	padding-left: 14px;
+	padding-left: 24px;
 }
 
 .cr-player-colour {
@@ -272,11 +298,12 @@
 
 .cr-gauge {
 	position: relative;
-	width: 10px;
-	flex: 0 0 10px;
-	background: #666;
+	width: 20px;
+	flex: 0 0 20px;
+	background: #403d39;
 	overflow: hidden;
-	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+	border-radius: 2px;
+	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 
 .cr-gauge-fill {
@@ -297,21 +324,109 @@
 	height: 50% !important;
 }
 
-.cr-gauge-mid {
+.cr-gauge-tick {
 	position: absolute;
 	left: 0;
 	right: 0;
-	top: 50%;
-	height: 2px;
-	margin-top: -1px;
-	background: rgba(214, 79, 0, 0.6);
+	height: 1px;
+	background: rgba(128, 128, 128, 0.35);
+	pointer-events: none;
+}
+
+.cr-gauge-text {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 3px;
+	font-size: 9px;
+	font-weight: 700;
+	line-height: 1;
+	text-align: center;
+	color: #fff;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: -0.3px;
+}
+
+.cr-gauge-text.at-bottom {
+	top: auto;
+	bottom: 3px;
+}
+
+.cr-gauge-text.on-white {
+	color: #403d39;
+}
+
+.cr-narrow .cr-gauge {
+	width: 18px;
+	flex-basis: 18px;
+}
+
+/* ---------------- Draw mode ---------------- */
+
+.cr-drawbar {
+	display: none;
+	align-items: center;
+	gap: 8px;
+	margin: 4px 0 0 24px;
+	padding: 4px 8px;
+	border-radius: 4px;
+	background: var(--background-secondary);
+	font-size: 12px;
+}
+
+.cr-drawbar.is-open {
+	display: flex;
+}
+
+.cr-swatch {
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border-radius: 50%;
+	flex: none;
+	box-shadow: none;
+	border: 2px solid transparent;
+}
+
+.cr-swatch.is-selected {
+	border-color: var(--text-normal);
+}
+
+.cr-swatch-green {
+	background: #15781b;
+}
+
+.cr-swatch-red {
+	background: #882020;
+}
+
+.cr-swatch-blue {
+	background: #003088;
+}
+
+.cr-swatch-yellow {
+	background: #e68f00;
+}
+
+.cr-drawbar-hint {
+	flex: 1;
+	color: var(--text-muted);
+}
+
+.cr-drawbar-done {
+	padding: 2px 10px;
+	font-size: 12px;
+}
+
+.is-drawing .cr-cg-wrap {
+	cursor: crosshair;
 }
 
 /* ---------------- Controls ---------------- */
 
 .cr-controls {
 	display: flex;
-	margin: 4px 0 0 14px;
+	margin: 4px 0 0 24px;
 	border-radius: 4px;
 	background: var(--background-secondary);
 }
@@ -515,6 +630,27 @@
 	text-overflow: ellipsis;
 }
 
+.cr-threat {
+	margin-left: auto;
+	padding: 2px;
+	height: auto;
+	color: var(--text-faint);
+}
+
+.cr-threat svg {
+	width: 14px;
+	height: 14px;
+}
+
+.cr-threat.is-on {
+	color: #c33;
+}
+
+.cr-pvs.is-threat .cr-pv {
+	cursor: default;
+	color: #c33;
+}
+
 .cr-switch {
 	position: relative;
 	display: inline-block;
@@ -594,7 +730,7 @@
 .cr-graph {
 	position: relative;
 	height: 56px;
-	margin: 6px 0 0 14px;
+	margin: 6px 0 0 24px;
 	cursor: pointer;
 	background: #262421;
 	border-radius: 3px;

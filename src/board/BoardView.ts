@@ -12,6 +12,8 @@ import type { DrawShape } from "chessground/draw";
 import type { Key } from "chessground/types";
 import { chessgroundDests } from "chessops/compat";
 import { makeSanVariation } from "chessops/san";
+import { Chess, Position } from "chessops/chess";
+import { parseFen } from "chessops/fen";
 import { ChildNode, CommentShape, CommentShapeColor, Node, PgnNodeData } from "chessops/pgn";
 import { makeSquare, parseSquare } from "chessops/util";
 import type { Colour } from "../types";
@@ -57,6 +59,9 @@ export interface BlockState {
 	undo: Snapshot[];
 	redo: Snapshot[];
 	engineOn: boolean;
+	threatOn: boolean;
+	drawMode: boolean;
+	drawColour: CommentShapeColor;
 	hadFocus: boolean;
 	rendered: boolean;
 }
@@ -67,6 +72,9 @@ export const newBlockState = (): BlockState => ({
 	undo: [],
 	redo: [],
 	engineOn: false,
+	threatOn: false,
+	drawMode: false,
+	drawColour: "green",
 	hadFocus: false,
 	rendered: false,
 });
@@ -91,6 +99,28 @@ const BRUSH: Record<CommentShapeColor, string> = { green: "green", red: "red", b
 const NAG_CLASS: Record<number, string> = { 1: "good", 2: "mistake", 3: "brilliant", 4: "blunder", 5: "interesting", 6: "dubious" };
 /** A drawn-shape change counts as the user's only shortly after a right-button press on the board. */
 const DRAW_WINDOW_MS = 5000;
+/** Engine and threat arrows are thinner than chessground's pale brushes (15). */
+const ENGINE_ARROW_WIDTH = 8;
+const DRAW_COLOURS: CommentShapeColor[] = ["green", "red", "blue", "yellow"];
+
+/** Position after passing the move (for "show threat"); undefined if that is illegal (in check). */
+export function nullMoveFen(fen: string): string | undefined {
+	const parts = fen.split(" ");
+	if (parts.length < 4) return undefined;
+	parts[1] = parts[1] === "w" ? "b" : "w";
+	parts[3] = "-";
+	const nf = parts.join(" ");
+	const setup = parseFen(nf);
+	if (setup.isErr) return undefined;
+	return Chess.fromSetup(setup.value).isOk ? nf : undefined;
+}
+
+function positionFromFen(fen: string): Position | undefined {
+	const setup = parseFen(fen);
+	if (setup.isErr) return undefined;
+	const pos = Chess.fromSetup(setup.value);
+	return pos.isOk ? pos.value : undefined;
+}
 
 const fmtClock = (s: number) => {
 	const h = Math.floor(s / 3600);
@@ -106,6 +136,13 @@ export function formatScore(s: Score): string {
 }
 
 type MoveNode = ChildNode<PgnNodeData>;
+
+/** Short label for the gauge: "0.3", "2.1", "M3". */
+function gaugeLabel(s: Score): string {
+	if (s.mate !== undefined) return s.mate === 0 ? "#" : `M${Math.abs(s.mate)}`;
+	const v = Math.abs((s.cp ?? 0) / 100);
+	return v >= 10 ? v.toFixed(0) : v.toFixed(1);
+}
 
 export class BoardView {
 	private game: PgnGame;
@@ -123,9 +160,12 @@ export class BoardView {
 	private cleanups: Array<() => void> = [];
 	private longPressTimer?: number;
 	private lastRightDown = 0;
+	private lastSaved: string;
+	private drawPending?: Key;
 
 	constructor(private container: HTMLElement, pgn: string, private host: BoardHost) {
 		this.game = parseGame(pgn);
+		this.lastSaved = pgn;
 		this.root = container.createDiv({ cls: "cr-board" });
 		this.root.tabIndex = 0;
 		if (!nodeAt(this.game, this.state.path)) this.state.path = [];
@@ -147,19 +187,22 @@ export class BoardView {
 		const s = this.settings;
 		this.root.empty();
 		this.root.addClass(`cr-theme-${s.boardTheme}`);
+		// Grid: the move list sits beside the board row only, so its top and bottom line up with the board.
 		const main = this.root.createDiv({ cls: "cr-main" });
-		const left = main.createDiv({ cls: "cr-left" });
-		this.els.topPlayer = left.createDiv({ cls: "cr-player cr-player-top" });
-		const boardRow = left.createDiv({ cls: "cr-board-row" });
+		this.els.topPlayer = main.createDiv({ cls: "cr-player cr-player-top" });
+		const boardRow = main.createDiv({ cls: "cr-board-row" });
 		this.els.evalBar = boardRow.createDiv({ cls: "cr-gauge" });
 		this.els.evalFill = this.els.evalBar.createDiv({ cls: "cr-gauge-fill" });
-		this.els.evalBar.createDiv({ cls: "cr-gauge-mid" });
+		// Faint ticks every 12.5%, as on Lichess (no highlighted middle line).
+		for (let i = 1; i < 8; i++) this.els.evalBar.createDiv({ cls: "cr-gauge-tick" }).style.top = `${i * 12.5}%`;
+		this.els.evalText = this.els.evalBar.createDiv({ cls: "cr-gauge-text" });
 		const cgWrap = boardRow.createDiv({ cls: "cr-cg-wrap" });
 		this.els.cg = cgWrap.createDiv({ cls: "cr-cg" });
 		this.els.promo = cgWrap.createDiv({ cls: "cr-promo" });
-		this.els.bottomPlayer = left.createDiv({ cls: "cr-player cr-player-bottom" });
-		this.renderControls(left.createDiv({ cls: "cr-controls" }));
-		this.els.graph = left.createDiv({ cls: "cr-graph" });
+		this.els.bottomPlayer = main.createDiv({ cls: "cr-player cr-player-bottom" });
+		this.renderControls(main.createDiv({ cls: "cr-controls" }));
+		this.els.drawBar = main.createDiv({ cls: "cr-drawbar" });
+		this.els.graph = main.createDiv({ cls: "cr-graph" });
 		const side = main.createDiv({ cls: "cr-side" });
 		this.els.engine = side.createDiv({ cls: "cr-ceval" });
 		this.els.moves = side.createDiv({ cls: "cr-moves" });
@@ -185,6 +228,7 @@ export class BoardView {
 		});
 
 		this.bindEvents();
+		this.renderDrawBar();
 		void this.reloadAnalysis();
 		this.cleanups.push(this.host.onAnalysisChange(() => void this.reloadAnalysis()));
 		this.update();
@@ -232,8 +276,12 @@ export class BoardView {
 	private openBoardMenu(e: MouseEvent): void {
 		const menu = new Menu();
 		menu.addItem((i) => i.setTitle("Flip board").setIcon("arrow-up-down").onClick(() => this.flip()));
-		menu.addItem((i) => i.setTitle("Undo").setIcon("undo-2").setDisabled(!this.state.undo.length).onClick(() => this.undo()));
-		menu.addItem((i) => i.setTitle("Redo").setIcon("redo-2").setDisabled(!this.state.redo.length).onClick(() => this.redo()));
+		menu.addItem((i) =>
+			i.setTitle("Draw arrows and circles").setIcon("pencil").setChecked(this.state.drawMode).onClick(() => this.setDrawMode(!this.state.drawMode)),
+		);
+		menu.addItem((i) =>
+			i.setTitle("Show threat").setIcon("crosshair").setChecked(this.state.threatOn).onClick(() => this.toggleThreat()),
+		);
 		menu.addSeparator();
 		menu.addItem((i) => i.setTitle("Copy PGN").setIcon("copy").onClick(async () => {
 			await navigator.clipboard.writeText(this.getPgn());
@@ -261,6 +309,12 @@ export class BoardView {
 		on(this.els.cg, "pointerdown", (e) => {
 			if (e.button === 2) this.lastRightDown = Date.now();
 		}, { capture: true });
+		// Draw mode: tap two squares for an arrow, one square twice for a circle.
+		on(this.els.cg, "pointerup", (e) => {
+			if (!this.state.drawMode || e.button !== 0) return;
+			const key = this.cg?.getKeyAtDomPos([e.clientX, e.clientY]);
+			if (key) this.onDrawTap(key);
+		});
 		const ro = new ResizeObserver(() => {
 			this.root.toggleClass("cr-narrow", this.root.clientWidth < 560);
 			this.cg?.redrawAll();
@@ -330,6 +384,8 @@ export class BoardView {
 		else if (e.key === "ArrowUp") this.sibling(-1);
 		else if (e.key === "ArrowDown") this.sibling(1);
 		else if (e.key === "f" || e.key === "F") this.flip();
+		else if (e.key === "x" || e.key === "X") this.toggleThreat();
+		else if (e.key === "Escape" && this.state.drawMode) this.setDrawMode(false);
 		else handled = false;
 		if (handled) {
 			e.preventDefault();
@@ -352,7 +408,9 @@ export class BoardView {
 			turnColor: pos.turn,
 			lastMove,
 			check: pos.isCheck() ? pos.turn : false,
-			movable: { color: pos.isEnd() ? undefined : pos.turn, dests: chessgroundDests(pos) as Map<Key, Key[]> },
+			movable: { color: pos.isEnd() || this.state.drawMode ? undefined : pos.turn, dests: chessgroundDests(pos) as Map<Key, Key[]> },
+			draggable: { enabled: !this.state.drawMode },
+			selectable: { enabled: !this.state.drawMode },
 			drawable: { shapes: comment.shapes.map(toDrawShape) },
 		});
 		this.renderMoves();
@@ -703,6 +761,7 @@ export class BoardView {
 		this.state.hadFocus = this.root.contains(document.activeElement);
 		try {
 			await this.host.save(pgn);
+			this.lastSaved = pgn;
 		} catch (e) {
 			new Notice(`Chess Review: could not save the game: ${(e as Error).message}`);
 		}
@@ -710,6 +769,77 @@ export class BoardView {
 
 	getPgn(): string {
 		return serialise(this.game);
+	}
+
+	/** The PGN last written to the note (what a re-rendered block will contain). */
+	savedPgn(): string {
+		return this.lastSaved;
+	}
+
+	/** Move this board into a re-rendered block instead of rebuilding it. */
+	adopt(container: HTMLElement, host: BoardHost): void {
+		this.host = host;
+		this.container = container;
+		container.appendChild(this.root);
+		window.requestAnimationFrame(() => this.cg?.redrawAll());
+		if (this.state.hadFocus) {
+			this.state.hadFocus = false;
+			this.root.focus({ preventScroll: true });
+		}
+	}
+
+	/* ------------------------------------------------------------ */
+	/* Draw mode (touch-friendly arrows and circles)                */
+	/* ------------------------------------------------------------ */
+
+	private setDrawMode(on: boolean): void {
+		this.state.drawMode = on;
+		this.drawPending = undefined;
+		this.root.toggleClass("is-drawing", on);
+		this.renderDrawBar();
+		this.update();
+	}
+
+	private renderDrawBar(): void {
+		const el = this.els.drawBar;
+		if (!el) return;
+		el.empty();
+		el.toggleClass("is-open", this.state.drawMode);
+		this.root.toggleClass("is-drawing", this.state.drawMode);
+		if (!this.state.drawMode) return;
+		for (const c of DRAW_COLOURS) {
+			const b = el.createEl("button", { cls: `cr-swatch cr-swatch-${c}` + (this.state.drawColour === c ? " is-selected" : ""), attr: { "aria-label": c } });
+			b.addEventListener("click", () => {
+				this.state.drawColour = c;
+				this.renderDrawBar();
+			});
+		}
+		el.createSpan({ cls: "cr-drawbar-hint", text: "Tap two squares for an arrow, a square twice for a circle." });
+		const done = el.createEl("button", { cls: "cr-drawbar-done", text: "Done" });
+		done.addEventListener("click", () => this.setDrawMode(false));
+	}
+
+	private onDrawTap(key: Key): void {
+		if (!this.drawPending) {
+			this.drawPending = key;
+			this.renderEngine(); // refreshes auto shapes, including the pending marker
+			return;
+		}
+		const from = parseSquare(this.drawPending);
+		const to = parseSquare(key);
+		this.drawPending = undefined;
+		if (from === undefined || to === undefined) return;
+		const node = nodeAt(this.game, this.state.path);
+		if (!node) return;
+		const colour = this.state.drawColour;
+		const shapes = commentOf(node, this.game).shapes.slice();
+		const i = shapes.findIndex((s) => s.from === from && s.to === to);
+		if (i >= 0 && shapes[i].color === colour) shapes.splice(i, 1);
+		else if (i >= 0) shapes[i] = { color: colour, from, to };
+		else shapes.push({ color: colour, from, to });
+		this.edit(() => updateComment(this.game, this.state.path, { shapes }), false);
+		this.cg?.setShapes(shapes.map(toDrawShape));
+		this.renderEngine();
 	}
 
 	/* ------------------------------------------------------------ */
@@ -752,9 +882,20 @@ export class BoardView {
 		bar.toggleClass("is-empty", !s);
 		const w = s ? winningChances(scoreToCp(s)) : 0;
 		const whitePct = 50 + 50 * w;
+		const whiteAtBottom = this.orientation() === "white";
 		this.els.evalFill.style.height = `${whitePct}%`;
-		this.els.evalFill.toggleClass("is-top", this.orientation() === "black");
+		this.els.evalFill.toggleClass("is-top", !whiteAtBottom);
 		bar.setAttribute("aria-label", s ? formatScore(s) : "No evaluation");
+		// The number sits at the end of the side that is better, as on the board's edge.
+		const text = this.els.evalText;
+		if (!s) {
+			text.setText("");
+			return;
+		}
+		const whiteBetter = scoreToCp(s) >= 0;
+		text.setText(gaugeLabel(s));
+		text.toggleClass("on-white", whiteBetter);
+		text.toggleClass("at-bottom", whiteBetter === whiteAtBottom);
 	}
 
 	private renderGraph(): void {
@@ -811,8 +952,24 @@ export class BoardView {
 
 	private toggleEngine(on: boolean): void {
 		this.state.engineOn = on;
+		if (!on) this.state.threatOn = false;
 		this.restartInteractive();
 		this.renderEngine();
+	}
+
+	/** Show the opponent's best move if it were their turn (Lichess's "show threat"). */
+	private toggleThreat(): void {
+		this.state.threatOn = !this.state.threatOn;
+		if (this.state.threatOn) this.state.engineOn = true;
+		this.restartInteractive();
+		this.renderEngine();
+		this.updateEvalBar();
+	}
+
+	/** The position the engine looks at: the one on screen, or after a pass in threat mode. */
+	private engineFen(): string | undefined {
+		const fen = infoAt(this.game, this.state.path).fen;
+		return this.state.threatOn ? nullMoveFen(fen) : fen;
 	}
 
 	private stopInteractive(): void {
@@ -829,8 +986,10 @@ export class BoardView {
 		if (!this.state.engineOn) return;
 		const info = infoAt(this.game, this.state.path);
 		if (info.pos.isEnd()) return;
+		const target = this.engineFen();
+		if (!target) return;
 		this.interactiveTimer = window.setTimeout(() => {
-			const fen = info.fen;
+			const fen = target;
 			const h = this.host.engine.interactive(fen, (lines) => {
 				this.liveFen = fen;
 				this.liveLines = lines;
@@ -854,11 +1013,13 @@ export class BoardView {
 		if (!el) return;
 		el.empty();
 		const info = infoAt(this.game, this.state.path);
+		const threat = this.state.engineOn && this.state.threatOn;
+		const target = this.engineFen();
 		const rows: Array<{ score: Score; pv: string[]; depth: number }> = [];
 		let label = "";
-		if (this.state.engineOn && this.liveFen === info.fen) {
+		if (this.state.engineOn && target && this.liveFen === target) {
 			for (const l of this.liveLines.slice(0, 3)) rows.push({ score: l.score, pv: l.pv, depth: l.depth });
-			if (rows[0]) label = `depth ${rows[0].depth}`;
+			if (rows[0]) label = `${threat ? "Threat · " : ""}depth ${rows[0].depth}`;
 		} else if (!this.state.engineOn) {
 			const c = this.cachedPly();
 			if (c && c.pv.length) {
@@ -873,39 +1034,55 @@ export class BoardView {
 		input.checked = this.state.engineOn;
 		sw.createSpan({ cls: "cr-switch-track" });
 		input.addEventListener("change", () => this.toggleEngine(input.checked));
-		head.createSpan({ cls: "cr-ceval-score", text: rows[0] ? formatScore(rows[0].score) : "" });
-		head.createSpan({ cls: "cr-ceval-label", text: label || (this.state.engineOn ? (info.pos.isEnd() ? "Game over" : "Calculating…") : "Stockfish 18") });
+		head.createSpan({ cls: "cr-ceval-score", text: rows[0] && !threat ? formatScore(rows[0].score) : "" });
+		let idle = "Stockfish 18";
+		if (this.state.engineOn) idle = info.pos.isEnd() ? "Game over" : threat && !target ? "No threat while in check" : threat ? "Threat · calculating…" : "Calculating…";
+		head.createSpan({ cls: "cr-ceval-label", text: label || idle });
+		const tb = head.createEl("button", {
+			cls: "cr-threat clickable-icon" + (this.state.threatOn ? " is-on" : ""),
+			attr: { "aria-label": "Show threat (X)" },
+		});
+		setIcon(tb, "crosshair");
+		tb.addEventListener("click", () => this.toggleThreat());
 
-		if (!rows.length) {
-			this.cg?.setAutoShapes([]);
-			return;
+		const auto: DrawShape[] = [];
+		if (this.drawPending) auto.push({ orig: this.drawPending, brush: BRUSH[this.state.drawColour] });
+		if (rows.length) {
+			const pvs = el.createDiv({ cls: "cr-pvs" + (threat ? " is-threat" : "") });
+			const pvPos = threat && target ? positionFromFen(target) : info.pos;
+			for (const r of rows) {
+				const row = pvs.createDiv({ cls: "cr-pv", attr: threat ? {} : { title: "Play the first move" } });
+				row.createSpan({ cls: "cr-pv-score", text: formatScore(r.score) });
+				row.createSpan({ cls: "cr-pv-moves", text: pvPos ? this.pvSan(pvPos, r.pv) : r.pv.join(" ") });
+				// Threat lines start from a passed move, so they cannot be played here.
+				if (!threat) row.addEventListener("click", () => {
+					if (r.pv[0]) this.playUci(r.pv[0]);
+				});
+			}
+			const best = rows[0].pv[0];
+			if (best && best.length >= 4) {
+				auto.push({
+					orig: best.slice(0, 2) as Key,
+					dest: best.slice(2, 4) as Key,
+					brush: threat ? "paleRed" : "paleBlue",
+					modifiers: { lineWidth: ENGINE_ARROW_WIDTH },
+				});
+			}
 		}
-		const pvs = el.createDiv({ cls: "cr-pvs" });
-		for (const r of rows) {
-			const row = pvs.createDiv({ cls: "cr-pv", attr: { title: "Play the first move" } });
-			row.createSpan({ cls: "cr-pv-score", text: formatScore(r.score) });
-			row.createSpan({ cls: "cr-pv-moves", text: this.pvSan(info, r.pv) });
-			row.addEventListener("click", () => {
-				if (r.pv[0]) this.playUci(r.pv[0]);
-			});
-		}
-		const best = rows[0].pv[0];
-		if (best && best.length >= 4) {
-			this.cg?.setAutoShapes([{ orig: best.slice(0, 2) as Key, dest: best.slice(2, 4) as Key, brush: "paleBlue" }]);
-		}
+		this.cg?.setAutoShapes(auto);
 	}
 
-	private pvSan(info: ReturnType<typeof infoAt>, pv: string[]): string {
+	private pvSan(start: Position, pv: string[]): string {
 		try {
 			const ok = [];
-			const p = info.pos.clone();
+			const p = start.clone();
 			for (const u of pv) {
 				const m = parseMoveUci(p, u);
 				if (!m || !p.isLegal(m)) break;
 				ok.push(m);
 				p.play(m);
 			}
-			return makeSanVariation(info.pos, ok);
+			return makeSanVariation(start, ok);
 		} catch {
 			return pv.join(" ");
 		}
