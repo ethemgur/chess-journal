@@ -1,7 +1,7 @@
 /** ```chess-game``` processor: renders a lazy BoardView per block and writes edits back into that block only. */
 import { MarkdownPostProcessorContext, MarkdownRenderChild, TFile } from "obsidian";
 import type ChessReviewPlugin from "../main";
-import { CODE_LANG, replaceBlockBody } from "../notes/noteWriter";
+import { CODE_LANG, findGameBlock, replaceBlockBody } from "../notes/noteWriter";
 import { PgnParseError, pgnHash } from "../pgn/tree";
 import { matchMyColour, pgnTags } from "../sources/normalise";
 import type { Colour } from "../types";
@@ -202,7 +202,7 @@ class ChessGameBlock extends MarkdownRenderChild {
 			state,
 			loadAnalysis: async () => (gameKey ? plugin.cache.get(gameKey) : undefined),
 			onAnalysisChange: (fn) => plugin.cache.onChange((k) => k === gameKey && fn()),
-			save: (pgn) => this.save(pgn, gameKey),
+			save: (pgn, expected) => this.save(pgn, expected, gameKey),
 			askDownloadEngine: () => plugin.confirmEngineDownload(),
 			setActive: (v) => plugin.setActiveBoard(v),
 		};
@@ -243,24 +243,19 @@ class ChessGameBlock extends MarkdownRenderChild {
 		if (!(e instanceof PgnParseError)) console.error("Chess Review:", e);
 	}
 
-	/** Replace only this block's body, using its position from getSectionInfo. */
-	private async save(pgn: string, gameKey?: string): Promise<void> {
+	/**
+	 * Replace only this block's body. The block is found by its current text (`expected`),
+	 * so this works even after the block has left the page; its position from
+	 * getSectionInfo only breaks ties when the same game appears twice.
+	 */
+	private async save(pgn: string, expected: string, gameKey?: string): Promise<void> {
 		const file = this.plugin.app.vault.getAbstractFileByPath(this.ctx.sourcePath);
 		if (!(file instanceof TFile)) throw new Error("the note was not found");
-		const info = this.ctx.getSectionInfo(this.containerEl);
-		if (!info) throw new Error("the block's position in the note is unknown (is it embedded?)");
-		const expected = this.source;
+		const info = this.containerEl.isConnected ? this.ctx.getSectionInfo(this.containerEl) : null;
 		await this.plugin.app.vault.process(file, (data) => {
-			const lines = data.split("\n").map((l) => l.replace(/\r$/, ""));
-			const open = lines[info.lineStart] ?? "";
-			if (!new RegExp("^\\s*(`{3,}|~{3,})" + CODE_LANG).test(open)) {
-				throw new Error("the note changed while editing; reopen it and try again");
-			}
-			const body = lines.slice(info.lineStart + 1, info.lineEnd).join("\n");
-			if (body.trim() !== expected.trim()) {
-				throw new Error("the game text changed outside the board; reopen the note and try again");
-			}
-			return replaceBlockBody(data, info.lineStart, info.lineEnd, pgn);
+			const block = findGameBlock(data, expected, info?.lineStart);
+			if (!block) throw new Error("the game text changed outside the board; use Copy PGN to keep your edits");
+			return replaceBlockBody(data, block.lineStart, block.lineEnd, pgn);
 		});
 		this.source = pgn;
 		if (gameKey) await this.plugin.recordEditedPgn(gameKey, pgnHash(pgn));

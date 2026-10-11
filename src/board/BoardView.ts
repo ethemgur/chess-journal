@@ -88,7 +88,8 @@ export interface BoardHost {
 	state: BlockState;
 	loadAnalysis(): Promise<GameAnalysis | undefined>;
 	onAnalysisChange(fn: () => void): () => void;
-	save(pgn: string): Promise<void>;
+	/** Write `pgn` over the block whose text is currently `expected`. */
+	save(pgn: string, expected: string): Promise<void>;
 	askDownloadEngine(): void;
 	setActive(view: BoardView | null): void;
 }
@@ -146,7 +147,6 @@ export class BoardView {
 	private cg?: Api;
 	private root: HTMLElement;
 	private els: Record<string, HTMLElement> = {};
-	private saveTimer?: number;
 	private pendingSave?: string;
 	private analysis?: GameAnalysis;
 	private marks = new Map<number, Mark>();
@@ -164,6 +164,9 @@ export class BoardView {
 	private longPressTimer?: number;
 	private lastRightDown = 0;
 	private lastSaved: string;
+	private saveChain: Promise<void> = Promise.resolve();
+	/** Last scroll position of the move list (a detached element reports 0, so track it live). */
+	private movesScroll = 0;
 	/** Draw mode gesture: the square the press started on, and the live preview shape. */
 	private drawStart?: Key;
 	private drawPreview?: DrawShape;
@@ -315,6 +318,21 @@ export class BoardView {
 			this.cleanups.push(() => el.removeEventListener(ev, fn, opts));
 		};
 		on(this.root, "keydown", (e) => this.onKey(e));
+		// Save when the user moves on: a press outside the board (menus and dialogs opened
+		// from the board do not count), or the app going to the background.
+		const outside = (e: Event) => {
+			const t = e.target as HTMLElement | null;
+			if (!this.pendingSave || !t || this.root.contains(t)) return;
+			if (t.closest(".menu, .modal-container, .suggestion-container, .prompt")) return;
+			void this.flushSave();
+		};
+		document.addEventListener("pointerdown", outside, true);
+		this.cleanups.push(() => document.removeEventListener("pointerdown", outside, true));
+		const hidden = () => {
+			if (document.visibilityState === "hidden") void this.flushSave();
+		};
+		document.addEventListener("visibilitychange", hidden);
+		this.cleanups.push(() => document.removeEventListener("visibilitychange", hidden));
 		on(this.root, "focusin", () => this.host.setActive(this));
 		// In Live Preview, a click that reaches the editor puts the cursor inside the
 		// block and the board is re-rendered as source. Keep pointer events here.
@@ -367,6 +385,9 @@ export class BoardView {
 			this.refreshAutoShapes();
 		});
 		// Only our layout reacts to size changes; chessground resizes itself (redrawAll would rebuild the board).
+		on(this.els.moves, "scroll", () => {
+			if (this.root.isConnected) this.movesScroll = this.els.moves.scrollTop;
+		}, { passive: true });
 		const ro = new ResizeObserver(() => {
 			this.root.toggleClass("cr-narrow", this.root.clientWidth < 560);
 			window.requestAnimationFrame(() => this.syncLayout());
@@ -821,23 +842,36 @@ export class BoardView {
 		this.scheduleSave(pgn);
 	}
 
-	/** Debounced write-back (1 s). */
+	/**
+	 * Edits are written to the note when you leave the board (tap or click elsewhere,
+	 * switch or close the note, app to background), not while you work on it: every
+	 * write makes Obsidian re-render the block, which would flash the board.
+	 */
 	private scheduleSave(pgn: string): void {
 		this.pendingSave = pgn;
-		window.clearTimeout(this.saveTimer);
-		this.saveTimer = window.setTimeout(() => void this.flushSave(), 1000);
 	}
 
-	async flushSave(): Promise<void> {
-		window.clearTimeout(this.saveTimer);
+	hasPendingSave(): boolean {
+		return this.pendingSave !== undefined;
+	}
+
+	/** Saves run one after another, each against the text the previous one wrote. */
+	flushSave(): Promise<void> {
+		this.saveChain = this.saveChain.then(() => this.doSave());
+		return this.saveChain;
+	}
+
+	private async doSave(): Promise<void> {
 		const pgn = this.pendingSave;
-		this.pendingSave = undefined;
 		if (pgn === undefined) return;
-		this.state.hadFocus = this.root.contains(document.activeElement);
+		this.pendingSave = undefined;
+		if (pgn === this.lastSaved) return;
 		try {
-			await this.host.save(pgn);
+			await this.host.save(pgn, this.lastSaved);
 			this.lastSaved = pgn;
 		} catch (e) {
+			// Keep the edit so a later attempt (or Copy PGN) can still recover it.
+			if (this.pendingSave === undefined) this.pendingSave = pgn;
 			new Notice(`Chess Review: could not save the game: ${(e as Error).message}`);
 		}
 	}
@@ -860,7 +894,14 @@ export class BoardView {
 	adopt(container: HTMLElement, host: BoardHost): void {
 		this.host = host;
 		this.container = container;
+		// Moving the element resets its scroll; put the move list back where it was.
 		container.appendChild(this.root);
+		const restore = () => {
+			if (this.els.moves) this.els.moves.scrollTop = this.movesScroll;
+		};
+		restore();
+		// Once it is on the page again (and laid out), restore once more.
+		window.requestAnimationFrame(restore);
 		// Keep the board's DOM as it is; just let chessground re-measure its position.
 		this.cg?.state.dom.bounds.clear();
 		window.requestAnimationFrame(() => this.syncLayout());

@@ -121,6 +121,26 @@ export function replaceBlockBody(content: string, lineStart: number, lineEnd: nu
 	return [...lines.slice(0, lineStart + 1), ...body.split("\n"), ...lines.slice(lineEnd)].join(nl);
 }
 
+/** Locate the chess-game block whose body is `expected` (closest to `near` if several). */
+export function findGameBlock(data: string, expected: string, near?: number): { lineStart: number; lineEnd: number } | undefined {
+	const lines = data.split("\n").map((l) => l.replace(/\r$/, ""));
+	const want = expected.trim();
+	const found: Array<{ lineStart: number; lineEnd: number }> = [];
+	for (let i = 0; i < lines.length; i++) {
+		const open = /^\s*(`{3,}|~{3,})chess-game\b/.exec(lines[i]);
+		if (!open) continue;
+		const fence = open[1];
+		let j = i + 1;
+		while (j < lines.length && !(lines[j].trim().startsWith(fence[0].repeat(fence.length)) && lines[j].trim().replace(/[`~]/g, "") === "")) j++;
+		if (j >= lines.length) break;
+		if (lines.slice(i + 1, j).join("\n").trim() === want) found.push({ lineStart: i, lineEnd: j });
+		i = j;
+	}
+	if (!found.length) return undefined;
+	if (near === undefined) return found[0];
+	return found.reduce((a, b) => (Math.abs(b.lineStart - near) < Math.abs(a.lineStart - near) ? b : a));
+}
+
 /** Extract the PGN of the first chess-game block of a note. */
 export function firstGameBlock(content: string): string | undefined {
 	const m = /^(```+|~~~+)chess-game[^\n]*\n([\s\S]*?)^\1\s*$/m.exec(content);

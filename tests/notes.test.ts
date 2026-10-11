@@ -4,6 +4,7 @@ import {
 	SUMMARY_END,
 	SUMMARY_START,
 	fileNameFor,
+	findGameBlock,
 	firstGameBlock,
 	formatTimeControl,
 	renderNote,
@@ -109,5 +110,23 @@ describe("frontmatter ownership", () => {
 describe("fixtures exist", () => {
 	it("loads", () => {
 		expect(readFileSync(new URL("./fixtures/otb.pgn", import.meta.url), "utf8")).toContain("Spring Open");
+	});
+});
+
+describe("finding a game block by its text", () => {
+	const note = "# A\n\n```chess-game\n1. e4 e5 *\n```\n\ntext\n\n````chess-game\n1. d4 d5 *\n````\n\n```chess-game\n1. e4 e5 *\n```\n";
+	it("finds the block with the expected body, ignoring position", () => {
+		expect(findGameBlock(note, "1. d4 d5 *")).toEqual({ lineStart: 8, lineEnd: 10 });
+		expect(findGameBlock(note, "  1. d4 d5 *\n")).toEqual({ lineStart: 8, lineEnd: 10 });
+		expect(findGameBlock(note, "1. c4 *")).toBeUndefined();
+	});
+	it("picks the copy nearest the known position when the same game appears twice", () => {
+		expect(findGameBlock(note, "1. e4 e5 *")).toEqual({ lineStart: 2, lineEnd: 4 });
+		expect(findGameBlock(note, "1. e4 e5 *", 12)).toEqual({ lineStart: 12, lineEnd: 14 });
+	});
+	it("replacing it leaves the rest of the note unchanged", () => {
+		const b = findGameBlock(note, "1. d4 d5 *")!;
+		const out = replaceBlockBody(note, b.lineStart, b.lineEnd, "1. d4 Nf6 *");
+		expect(out).toBe(note.replace("1. d4 d5 *", "1. d4 Nf6 *"));
 	});
 });

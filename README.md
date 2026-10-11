@@ -87,6 +87,8 @@ SORT played-at DESC
 
 Keys only apply to the board that has focus. The plugin sets no default hotkeys.
 
+Your edits (moves, comments, symbols, arrows and circles) are written into the note's `chess-game` block when you leave the board: when you tap or click anywhere outside it, switch or close the note, or Obsidian goes to the background. Saving while you work would make Obsidian redraw the block on every change.
+
 ## Analysis
 
 - Each game's main line is analysed once with a fixed setting (1.5 s per position by default), so mistake counts are comparable across sites and months. The setting used is stored in each game's `engine` key.
