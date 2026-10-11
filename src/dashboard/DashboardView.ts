@@ -25,6 +25,7 @@ import {
 	accuracyRows,
 	bandFigures,
 	chooseAccuracySite,
+	clockRace,
 	defaultFilters,
 	endgameFigures,
 	imbalanceTable,
@@ -40,7 +41,7 @@ import {
 	timeFigures,
 	vsExpected,
 } from "./compute";
-import { BANDS, BAND_LABEL, Band, IMBALANCE_LABEL, MATERIAL_SWING, MyResult } from "./definitions";
+import { BANDS, BAND_LABEL, Band, CLOCK_EDGE_MOVE, CLOCK_EDGE_PCT, IMBALANCE_LABEL, MATERIAL_SWING, MyResult } from "./definitions";
 import { Tooltip, barChart, lineChart } from "./charts";
 
 export const VIEW_TYPE_DASHBOARD = "chess-journal-dashboard";
@@ -63,6 +64,7 @@ const PERIODS: Array<[Period, string]> = [["30d", "30 days"], ["3m", "3 months"]
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const pct = (v?: number) => (v === undefined ? "–" : `${v.toFixed(1)}%`);
 const acc = (v?: number) => (v === undefined ? "–" : v.toFixed(1));
+const fmtSeconds = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : `${Math.round(s)} s`);
 const signed = (v: number, digits = 1) => `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(v).toFixed(digits)}`;
 const groupLabel = (g: { site: Site; timeClass?: TimeClass }) => `${SITE_LABEL[g.site]} ${g.timeClass ?? ""}`.trim();
 const today = () => new Date().toISOString().slice(0, 10);
@@ -171,6 +173,7 @@ export class DashboardView extends ItemView {
 		this.panelAccuracyByResult(panels, accRows, site);
 		this.panelAccuracyByTimeClass(panels, accRows, site);
 		this.panelTime(panels, rows);
+		this.panelClockRace(panels, rows);
 		this.panelQueue(panels, rows);
 		this.contentEl.scrollTop = scroll;
 	}
@@ -702,27 +705,61 @@ export class DashboardView extends ItemView {
 		const t = timeFigures(rows);
 		const min = this.minGames();
 		const n = t.withClocks.length;
-		const figs = body.createDiv({ cls: "cr-figs" });
-		const fig = (value: string, label: string, games?: GameRow[]) => {
-			const f = figs.createDiv({ cls: "cr-fig" + (games ? " is-clickable" : "") + (n >= min ? "" : " is-muted") });
+		const figs = body.createDiv({ cls: "cr-figs cr-figs-3" });
+		const fig = (value: string, label: string, sub: string, games?: GameRow[]) => {
+			const f = figs.createDiv({ cls: "cr-fig" + (games?.length ? " is-clickable" : "") + (n >= min ? "" : " is-muted") });
 			f.createDiv({ cls: "cr-fig-value", text: n >= min ? value : "–" });
 			f.createDiv({ cls: "cr-fig-label", text: label });
-			if (games) f.addEventListener("click", () => this.openList(label, games));
+			if (sub) f.createDiv({ cls: "cr-fig-label cr-fig-sub", text: sub });
+			if (games?.length) f.addEventListener("click", () => this.openList(cap(label), games));
 		};
-		fig(pct(t.timeTroublePct), `games in time trouble (${t.timeTroubleGames.length})`, t.timeTroubleGames);
-		fig(t.medianFirst10 !== undefined ? `${Math.round(t.medianFirst10)} s` : "–", "median on my first 10 moves", t.withClocks);
-		fig(String(t.lostOnTime.length), "losses on time", t.lostOnTime);
-		const trouble = t.timeTroubleGames;
-		const calm = t.withClocks.filter((g) => !g.timeTrouble);
+		const whole = (v?: number) => (v === undefined ? "–" : `${Math.round(v)}%`);
+		fig(whole(t.timeTroublePct), "me in time trouble", `${t.timeTroubleGames.length} games`, t.timeTroubleGames);
+		fig(whole(t.oppTroublePct), "opponent in time trouble", `${t.oppTroubleGames.length} games`, t.oppTroubleGames);
+		fig(t.medianFirst10 !== undefined ? `${Math.round(t.medianFirst10)} s` : "–", "first 10 moves", "median", t.withClocks);
+		fig(String(t.lostOnTime.length), "lost on time", `${t.lostOnTimeNotBehind.length} not behind on material`, t.lostOnTime);
+		fig(String(t.wonOnTime.length), "won on time", "", t.wonOnTime);
+		fig(t.medianLongestThink !== undefined ? fmtSeconds(t.medianLongestThink) : "–", "longest think", "median per game");
+		this.resultTable(body, "Time trouble", [
+			{ label: "Only me", split: t.trouble.onlyMe },
+			{ label: "Only opponent", split: t.trouble.onlyOpp },
+			{ label: "Both", split: t.trouble.both },
+			{ label: "Neither", split: t.trouble.neither },
+		]);
+		foot(
+			`Time trouble: clock below 10% of base time or 30 s after any move. "Not behind on material": level or ahead in the final position. ${t.withoutClocks} game${t.withoutClocks === 1 ? "" : "s"} without clocks not included.`,
+		);
+	}
+
+	private panelClockRace(parent: HTMLElement, rows: GameRow[]): void {
+		const { body, foot } = this.panel(parent, "Clock race", "Do I spend my time faster than my opponents?");
+		const r = clockRace(rows);
+		const min = this.minGames();
+		if (!r.checkpoints[0].games.length) {
+			body.createDiv({ cls: "cr-empty", text: "No games with both players' clocks in this selection." });
+			return;
+		}
 		barChart(
 			body.createDiv({ cls: "cr-chart-box" }),
-			[
-				{ label: "In time trouble", sub: `${trouble.length} games`, muted: trouble.length < min, data: trouble, bars: [{ name: "Score", value: trouble.length >= min ? t.scoreInTrouble : undefined, color: "var(--cr-c1)", tip: `Score ${pct(t.scoreInTrouble)} · ${trouble.length} games` }] },
-				{ label: "Not in time trouble", sub: `${calm.length} games`, muted: calm.length < min, data: calm, bars: [{ name: "Score", value: calm.length >= min ? t.scoreWithout : undefined, color: "var(--cr-c2)", tip: `Score ${pct(t.scoreWithout)} · ${calm.length} games` }] },
-			],
-			{ tip: this.tip, height: 140, max: 100, format: (v) => `${Math.round(v)}%`, onClick: (g) => this.openList(g.label, g.data) },
+			r.checkpoints.map((c) => ({
+				label: `Move ${c.move}`,
+				sub: `${c.games.length} games`,
+				muted: c.games.length < min,
+				data: c,
+				bars: [
+					{ name: "Me", value: c.games.length >= min ? c.mine : undefined, color: "var(--cr-c1)", tip: `Me: ${c.mine ?? "–"}% of base time left · ${c.games.length} games` },
+					{ name: "Opponents", value: c.games.length >= min ? c.opp : undefined, color: "var(--cr-c2)", tip: `Opponents: ${c.opp ?? "–"}% left` },
+				],
+			})),
+			{ tip: this.tip, max: 100, format: (v) => `${Math.round(v)}%`, onClick: (g) => this.openList(`Games reaching move ${g.data.move}`, g.data.games) },
 		);
-		foot(`Score % with and without time trouble (clock below 10% of base time or 30 s). ${t.withoutClocks} game${t.withoutClocks === 1 ? "" : "s"} without clocks not included.`);
+		this.legend(body, [["My clock left (median)", "var(--cr-c1)"], ["Opponents'", "var(--cr-c2)"]]);
+		this.resultTable(body, `At move ${CLOCK_EDGE_MOVE}`, [
+			{ label: "More time", split: r.ahead },
+			{ label: "About even", split: r.even },
+			{ label: "Less time", split: r.behind },
+		]);
+		foot(`Clock left as % of base time (it can pass 100% with increment). "More time": at least ${CLOCK_EDGE_PCT} points more than the opponent after my ${CLOCK_EDGE_MOVE}th move. Daily and OTB games without clocks are not included.`);
 	}
 
 	private panelQueue(parent: HTMLElement, rows: GameRow[]): void {

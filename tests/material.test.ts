@@ -40,10 +40,10 @@ describe("move statistics (piece counting)", () => {
 	});
 
 	it("frontmatter round trip", () => {
-		const fm = positionFrontmatter({ moves: 40, materialLow: -5, materialHigh: 2, imbalances: ["minor-vs-rook"], endgame: true });
+		const fm = positionFrontmatter({ moves: 40, materialLow: -5, materialHigh: 2, materialEnd: -1, imbalances: ["minor-vs-rook"], endgame: true });
 		const row = rowFromFrontmatter("a.md", { "game-key": "chesscom:1", site: "chesscom", "my-colour": "white", "my-result": "draw", ...fm });
-		expect(row).toMatchObject({ moves: 40, materialLow: -5, materialHigh: 2, imbalances: ["minor-vs-rook"], endgame: true });
-		expect(positionFrontmatter({ moves: 10, materialLow: 0, materialHigh: 0, imbalances: [], endgame: false })).not.toHaveProperty("imbalances");
+		expect(row).toMatchObject({ moves: 40, materialLow: -5, materialHigh: 2, materialEnd: -1, imbalances: ["minor-vs-rook"], endgame: true });
+		expect(positionFrontmatter({ moves: 10, materialLow: 0, materialHigh: 0, materialEnd: 0, imbalances: [], endgame: false })).not.toHaveProperty("imbalances");
 	});
 });
 

@@ -10,6 +10,9 @@ import { TIME_CLASSES } from "../types";
 import {
 	BANDS,
 	Band,
+	CLOCK_CHECKPOINTS,
+	CLOCK_EDGE_MOVE,
+	CLOCK_EDGE_PCT,
 	IMBALANCE_KINDS,
 	Imbalance,
 	MATERIAL_SWING,
@@ -23,6 +26,7 @@ import {
 	points,
 	ratingBand,
 	reviewPriority,
+	wonOnTime,
 } from "./definitions";
 
 /* ------------------------------------------------------------------ */
@@ -57,10 +61,17 @@ export interface GameRow {
 	/** From the PGN clocks. */
 	timeTrouble?: boolean;
 	first10Seconds?: number;
+	oppTimeTrouble?: boolean;
+	/** Clock left after moves 10, 20, 30, 40, % of base time. */
+	clockCurve?: number[];
+	oppClockCurve?: number[];
+	longestThink?: number;
+	longestThinkMove?: number;
 	/** From the moves (piece counting); undefined until the note has them. */
 	moves?: number;
 	materialLow?: number;
 	materialHigh?: number;
+	materialEnd?: number;
 	imbalances?: Imbalance[];
 	endgame?: boolean;
 }
@@ -106,12 +117,24 @@ export function rowFromFrontmatter(path: string, fm: Record<string, unknown>): G
 		oppAccuracy: num(fm["opp-accuracy"]),
 		timeTrouble: typeof fm["time-trouble"] === "boolean" ? fm["time-trouble"] : undefined,
 		first10Seconds: num(fm["first-10-seconds"]),
+		oppTimeTrouble: typeof fm["opp-time-trouble"] === "boolean" ? fm["opp-time-trouble"] : undefined,
+		clockCurve: numList(fm["clock-curve"]),
+		oppClockCurve: numList(fm["opp-clock-curve"]),
+		longestThink: num(fm["longest-think"]),
+		longestThinkMove: num(fm["longest-think-move"]),
 		moves: num(fm.moves),
 		materialLow: num(fm["material-low"]),
 		materialHigh: num(fm["material-high"]),
+		materialEnd: num(fm["material-end"]),
 		imbalances: num(fm.moves) === undefined ? undefined : imbalanceList(fm.imbalances),
 		endgame: typeof fm.endgame === "boolean" ? fm.endgame : undefined,
 	};
+}
+
+function numList(v: unknown): number[] | undefined {
+	if (!Array.isArray(v)) return undefined;
+	const out = v.map(num);
+	return out.every((x): x is number => x !== undefined) && out.length ? out : undefined;
 }
 
 function imbalanceList(v: unknown): Imbalance[] {
@@ -457,12 +480,21 @@ export interface TimeFigures {
 	scoreWithout?: number;
 	medianFirst10?: number;
 	lostOnTime: GameRow[];
+	/** Lost on time while not behind on material in the final position. */
+	lostOnTimeNotBehind: GameRow[];
+	wonOnTime: GameRow[];
+	oppTroubleGames: GameRow[];
+	oppTroublePct?: number;
+	/** Who got into time trouble: score in each case (games with both sides' clocks). */
+	trouble: { onlyMe: ResultSplit; onlyOpp: ResultSplit; both: ResultSplit; neither: ResultSplit };
+	medianLongestThink?: number;
 }
 
 export function timeFigures(rows: GameRow[]): TimeFigures {
 	const withClocks = rows.filter((g) => g.timeTrouble !== undefined);
 	const trouble = withClocks.filter((g) => g.timeTrouble);
 	const calm = withClocks.filter((g) => !g.timeTrouble);
+	const both = withClocks.filter((g) => g.oppTimeTrouble !== undefined);
 	return {
 		withClocks,
 		withoutClocks: rows.length - withClocks.length,
@@ -472,6 +504,44 @@ export function timeFigures(rows: GameRow[]): TimeFigures {
 		scoreWithout: scoreFigures(calm).pct,
 		medianFirst10: median(withClocks.map((g) => g.first10Seconds).filter((v): v is number => v !== undefined)),
 		lostOnTime: rows.filter((g) => lostOnTime(g.myResult, g.termination)),
+		lostOnTimeNotBehind: rows.filter((g) => lostOnTime(g.myResult, g.termination) && g.materialEnd !== undefined && g.materialEnd >= 0),
+		wonOnTime: rows.filter((g) => wonOnTime(g.myResult, g.termination)),
+		oppTroubleGames: both.filter((g) => g.oppTimeTrouble),
+		oppTroublePct: both.length ? (both.filter((g) => g.oppTimeTrouble).length / both.length) * 100 : undefined,
+		trouble: {
+			onlyMe: split(both.filter((g) => g.timeTrouble && !g.oppTimeTrouble)),
+			onlyOpp: split(both.filter((g) => !g.timeTrouble && g.oppTimeTrouble)),
+			both: split(both.filter((g) => g.timeTrouble && g.oppTimeTrouble)),
+			neither: split(both.filter((g) => !g.timeTrouble && !g.oppTimeTrouble)),
+		},
+		medianLongestThink: median(withClocks.map((g) => g.longestThink).filter((v): v is number => v !== undefined)),
+	};
+}
+
+export interface ClockRace {
+	/** Median clock left (% of base) after each checkpoint move, in games that got that far. */
+	checkpoints: Array<{ move: number; games: GameRow[]; mine?: number; opp?: number }>;
+	/** At CLOCK_EDGE_MOVE: more time than the opponent, about even, less. */
+	ahead: ResultSplit;
+	even: ResultSplit;
+	behind: ResultSplit;
+}
+
+export function clockRace(rows: GameRow[]): ClockRace {
+	const curves = rows.filter((g) => g.clockCurve && g.oppClockCurve);
+	const at = (g: GameRow, i: number) => [g.clockCurve?.[i], g.oppClockCurve?.[i]];
+	const checkpoints = CLOCK_CHECKPOINTS.map((move, i) => {
+		const games = curves.filter((g) => at(g, i).every((v) => v !== undefined));
+		return { move, games, mine: median(games.map((g) => at(g, i)[0] as number)), opp: median(games.map((g) => at(g, i)[1] as number)) };
+	});
+	const ci = CLOCK_CHECKPOINTS.indexOf(CLOCK_EDGE_MOVE);
+	const edge = (g: GameRow) => (at(g, ci)[0] as number) - (at(g, ci)[1] as number);
+	const reached = checkpoints[ci].games;
+	return {
+		checkpoints,
+		ahead: split(reached.filter((g) => edge(g) >= CLOCK_EDGE_PCT)),
+		even: split(reached.filter((g) => Math.abs(edge(g)) < CLOCK_EDGE_PCT)),
+		behind: split(reached.filter((g) => edge(g) <= -CLOCK_EDGE_PCT)),
 	};
 }
 

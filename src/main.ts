@@ -17,7 +17,8 @@ import { RatingsCache } from "./dashboard/ratings";
 import { Filters, GameRow, defaultFilters } from "./dashboard/compute";
 import { chesscomUserAgent } from "./sources/chesscom";
 import { positionStats } from "./sources/material";
-import { POSITION_KEYS, applyOwnedKeys, positionFrontmatter } from "./notes/frontmatter";
+import { clockStats } from "./sources/clock";
+import { CLOCK_KEYS, POSITION_KEYS, applyOwnedKeys, changedKeys, clockFrontmatter, positionFrontmatter } from "./notes/frontmatter";
 
 /** Workspace event that asks a game's board to jump to a main-line ply: (gameKey, ply). */
 export const GOTO_PLY_EVENT = "chess-review:goto-ply";
@@ -31,7 +32,12 @@ interface PluginData {
 	editedPgn: Record<string, string>;
 	/** Dashboard filters, kept between sessions. */
 	dashboardFilters?: Filters;
+	/** Version of the move and clock statistics last written to every note. */
+	moveStatsVersion?: number;
 }
+
+/** Bump when the move or clock statistics change, so every note is re-read once. */
+const MOVE_STATS_VERSION = 2;
 
 export default class ChessJournalPlugin extends Plugin {
 	data!: PluginData;
@@ -158,7 +164,7 @@ export default class ChessJournalPlugin extends Plugin {
 			this.notes.buildIndex();
 			this.queue.kick();
 			// Older notes get their move statistics from their own PGN, once, in the background.
-			const t = window.setTimeout(() => void this.updatePositionStats(false), 5_000);
+			const t = window.setTimeout(() => void this.updatePositionStats((this.data.moveStatsVersion ?? 0) < MOVE_STATS_VERSION), 5_000);
 			this.register(() => window.clearTimeout(t));
 			if (this.settings.syncOnStartup) {
 				const t = window.setTimeout(() => void this.runSync("all"), 30_000);
@@ -188,6 +194,7 @@ export default class ChessJournalPlugin extends Plugin {
 			queue: Object.assign({ queue: [], paused: false }, raw.queue ?? {}),
 			editedPgn: raw.editedPgn ?? {},
 			dashboardFilters: raw.dashboardFilters,
+			moveStatsVersion: raw.moveStatsVersion,
 		};
 		this.settings = this.data.settings;
 	}
@@ -252,8 +259,8 @@ export default class ChessJournalPlugin extends Plugin {
 	private positionsRunning = false;
 
 	/**
-	 * Fill in move statistics (moves, material, imbalances, endgame) from each note's own
-	 * chess-game block: only notes without them, or every note when `all`. No network, no engine.
+	 * Fill in move and clock statistics (moves, material, imbalances, endgame, clocks) from each
+	 * note's own chess-game block: only notes without them, or every note when `all`. No network, no engine.
 	 */
 	async updatePositionStats(all: boolean): Promise<void> {
 		if (this.positionsRunning) return;
@@ -267,6 +274,8 @@ export default class ChessJournalPlugin extends Plugin {
 			});
 			if (!files.length) {
 				if (all) new Notice("Move statistics are up to date.");
+				this.data.moveStatsVersion = MOVE_STATS_VERSION;
+				await this.savePluginData();
 				return;
 			}
 			const notice = files.length > 20 || all ? new Notice(`Reading moves of ${files.length} games…`, 0) : undefined;
@@ -277,9 +286,12 @@ export default class ChessJournalPlugin extends Plugin {
 				const colour = fm?.["my-colour"] === "black" ? "black" : "white";
 				const pgn = firstGameBlock(await this.app.vault.cachedRead(file));
 				const stats = pgn ? positionStats(pgn, colour) : undefined;
-				if (stats) {
-					const wanted = positionFrontmatter(stats);
-					await this.app.fileManager.processFrontMatter(file, (f: Record<string, unknown>) => applyOwnedKeys(f, wanted, POSITION_KEYS));
+				if (pgn && stats) {
+					const clock = clockStats(pgn, colour, fm?.["time-class"] === "daily");
+					const wanted = { ...clockFrontmatter(clock), ...positionFrontmatter(stats) };
+					const owned = [...POSITION_KEYS, ...CLOCK_KEYS];
+					if (changedKeys(fm, wanted, owned).length)
+						await this.app.fileManager.processFrontMatter(file, (f: Record<string, unknown>) => applyOwnedKeys(f, wanted, owned));
 				}
 				if (++done % 25 === 0) {
 					notice?.setMessage(`Reading moves of games… ${done} / ${files.length}`);
@@ -287,7 +299,11 @@ export default class ChessJournalPlugin extends Plugin {
 				}
 			}
 			notice?.hide();
-			if (files.length > 20 || all) new Notice(`Move statistics added to ${done} games.`);
+			if (all && !this.syncCancelled) {
+				this.data.moveStatsVersion = MOVE_STATS_VERSION;
+				await this.savePluginData();
+			}
+			if (files.length > 20 || all) new Notice(`Move statistics updated for ${done} games.`);
 		} finally {
 			this.positionsRunning = false;
 		}

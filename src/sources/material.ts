@@ -95,6 +95,7 @@ export function positionStats(pgn: string, myColour: Colour): PositionStats | un
 		moves: Math.ceil((plies.length - 1) / 2),
 		materialLow: low,
 		materialHigh: high,
+		materialEnd: balances[balances.length - 1],
 		imbalances: IMBALANCE_KINDS.filter((k) => lasting.has(k)),
 		endgame,
 	};

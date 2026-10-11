@@ -11,6 +11,11 @@
 /** Time trouble: clock below the larger of this share of base time, or TIME_TROUBLE_MIN_SEC. */
 export const TIME_TROUBLE_SHARE = 0.1;
 export const TIME_TROUBLE_MIN_SEC = 30;
+/** Clock checkpoints: time left after these moves (each side's own move count). */
+export const CLOCK_CHECKPOINTS = [10, 20, 30, 40];
+/** Clock race: at move CLOCK_EDGE_MOVE, one side has at least CLOCK_EDGE_PCT % of base time more. */
+export const CLOCK_EDGE_MOVE = 20;
+export const CLOCK_EDGE_PCT = 10;
 /** Performance rating cap (± from average opponent rating). */
 export const PERFORMANCE_CAP = 800;
 /** Review priority: accuracy gap (opponent − me) per this many points counts 1; capped; plus a loss bonus. */
@@ -127,6 +132,11 @@ export function mean(xs: number[]): number | undefined {
 /** Accuracy edge: my accuracy − my opponent's in the same game (same site's scale). */
 export function accuracyEdge(myAccuracy: number, oppAccuracy: number): number {
 	return myAccuracy - oppAccuracy;
+}
+
+/** Wins on the opponent's clock. */
+export function wonOnTime(result: MyResult, termination?: string): boolean {
+	return result === "win" && /time/i.test(termination ?? "");
 }
 
 /** Losses from running out of time. */

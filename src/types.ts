@@ -39,6 +39,13 @@ export type AnalysisStatus = "none" | "queued" | "running" | "done" | "failed";
 export interface ClockStats {
 	timeTrouble: boolean | null;
 	first10Seconds: number | null;
+	oppTimeTrouble: boolean | null;
+	/** Clock left after moves 10, 20, 30, 40 (as far as the game went), % of base time. */
+	clockCurve: number[];
+	oppClockCurve: number[];
+	/** My longest think in seconds, and on which of my moves. */
+	longestThink: number | null;
+	longestThinkMove: number | null;
 }
 
 export interface PositionStats {
@@ -46,6 +53,8 @@ export interface PositionStats {
 	/** My lowest and highest lasting material balance (pawn = 1 … queen = 9). */
 	materialLow: number;
 	materialHigh: number;
+	/** Material balance in the final position. */
+	materialEnd: number;
 	/** Lasting imbalances, from my side (see IMBALANCE_KINDS). */
 	imbalances: string[];
 	/** An endgame was reached (ENDGAME_PIECES or fewer pieces left). */

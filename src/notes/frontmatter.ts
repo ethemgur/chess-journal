@@ -1,11 +1,22 @@
 /** Frontmatter schema version 1. Keys are kebab-case and flat for Dataview and Bases. */
-import type { AnalysisStatus, GameRecord, PositionStats } from "../types";
+import type { AnalysisStatus, ClockStats, GameRecord, PositionStats } from "../types";
 
 export const CR_SCHEMA = 1;
 export const GAME_TAG = "chess-game";
 
 /** Keys read from the game's moves (piece counting). Also filled in for older notes from their own PGN. */
-export const POSITION_KEYS = ["moves", "material-low", "material-high", "imbalances", "endgame"] as const;
+export const POSITION_KEYS = ["moves", "material-low", "material-high", "material-end", "imbalances", "endgame"] as const;
+
+/** Keys read from the game's clock times. */
+export const CLOCK_KEYS = [
+	"time-trouble",
+	"first-10-seconds",
+	"opp-time-trouble",
+	"clock-curve",
+	"opp-clock-curve",
+	"longest-think",
+	"longest-think-move",
+] as const;
 
 /** Keys the plugin may rewrite on sync. */
 export const SYNC_KEYS = [
@@ -32,8 +43,7 @@ export const SYNC_KEYS = [
 	"round",
 	"site-accuracy",
 	"opp-accuracy",
-	"time-trouble",
-	"first-10-seconds",
+	...CLOCK_KEYS,
 	...POSITION_KEYS,
 ] as const;
 
@@ -80,7 +90,7 @@ export function displayTimeControl(v: unknown): string {
 	return v;
 }
 
-export type FmValue = string | number | boolean | string[] | null;
+export type FmValue = string | number | boolean | string[] | number[] | null;
 export type Frontmatter = Record<string, FmValue>;
 
 /** Plugin-owned sync keys for a game. Missing values are left out (never written as empty). */
@@ -112,9 +122,24 @@ export function syncFrontmatter(r: GameRecord): Frontmatter {
 		round: r.round ?? null,
 		"site-accuracy": r.sourceAccuracy?.[r.myColour] ?? null,
 		"opp-accuracy": r.sourceAccuracy?.[oppColour] ?? null,
-		"time-trouble": r.clock?.timeTrouble ?? null,
-		"first-10-seconds": r.clock?.first10Seconds ?? null,
+		...clockFrontmatter(r.clock),
 		...positionFrontmatter(r.position),
+	};
+	for (const k of Object.keys(fm)) if (fm[k] === null) delete fm[k];
+	return fm;
+}
+
+/** Clock keys; unknown values and empty curves are left out. */
+export function clockFrontmatter(c?: ClockStats): Frontmatter {
+	if (!c) return {};
+	const fm: Frontmatter = {
+		"time-trouble": c.timeTrouble,
+		"first-10-seconds": c.first10Seconds,
+		"opp-time-trouble": c.oppTimeTrouble,
+		"clock-curve": c.clockCurve.length ? c.clockCurve : null,
+		"opp-clock-curve": c.oppClockCurve.length ? c.oppClockCurve : null,
+		"longest-think": c.longestThink,
+		"longest-think-move": c.longestThinkMove,
 	};
 	for (const k of Object.keys(fm)) if (fm[k] === null) delete fm[k];
 	return fm;
@@ -123,7 +148,7 @@ export function syncFrontmatter(r: GameRecord): Frontmatter {
 /** Position keys; imbalances is left out when there are none. */
 export function positionFrontmatter(p?: PositionStats): Frontmatter {
 	if (!p) return {};
-	const fm: Frontmatter = { moves: p.moves, "material-low": p.materialLow, "material-high": p.materialHigh, endgame: p.endgame };
+	const fm: Frontmatter = { moves: p.moves, "material-low": p.materialLow, "material-high": p.materialHigh, "material-end": p.materialEnd, endgame: p.endgame };
 	if (p.imbalances.length) fm.imbalances = p.imbalances;
 	return fm;
 }
