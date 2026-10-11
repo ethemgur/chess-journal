@@ -79,9 +79,14 @@ export class EngineService {
 	}
 
 	/** Interactive analysis of the position on screen: up to 3 lines, until stopped. */
-	interactive(fen: string, onInfo: (lines: EngineLine[]) => void): InteractiveHandle {
+	interactive(
+		fen: string,
+		onInfo: (lines: EngineLine[]) => void,
+		limits: { movetimeMs: number; multiPv: number } = { movetimeMs: 12_000, multiPv: 3 },
+	): InteractiveHandle {
 		this.interactiveCount++;
 		let stopped = false;
+		let finished = false;
 		let release = () => {
 			release = () => undefined;
 			this.interactiveCount--;
@@ -96,18 +101,20 @@ export class EngineService {
 				const engine = await this.get();
 				if (this.batchRunning) engine.stop();
 				if (stopped) return undefined;
-				return await engine.search(fen, { movetimeMs: 12_000, multiPv: 3 }, onInfo);
+				return await engine.search(fen, limits, onInfo);
 			} catch (e) {
 				if (e instanceof SearchStopped) return undefined;
 				throw e;
 			} finally {
+				finished = true;
 				release();
 			}
 		})();
 		return {
 			done,
 			stop: () => {
-				if (stopped) return;
+				// Never stop a search this handle does not own any more.
+				if (stopped || finished) return;
 				stopped = true;
 				this.engine?.stop();
 			},

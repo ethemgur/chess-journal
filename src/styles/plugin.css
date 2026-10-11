@@ -12,6 +12,10 @@
 }
 
 .cr-board {
+	/* Everything under the board lines up with the board's left edge: gauge width + gap. */
+	--cr-gauge-w: 20px;
+	--cr-gutter: calc(var(--cr-gauge-w) + 4px);
+	--cr-trim: 0px;
 	--cr-light: #f0d9b5;
 	--cr-dark: #b58863;
 	--cr-active: rgba(128, 128, 128, 0.3);
@@ -90,7 +94,11 @@
 .cr-narrow .cr-side {
 	contain: none;
 	max-height: 340px;
-	margin-top: 8px;
+	margin: 8px var(--cr-trim) 0 var(--cr-gutter);
+}
+
+.cr-narrow {
+	--cr-gauge-w: 18px;
 }
 
 /* ---------------- Players and clocks ---------------- */
@@ -100,7 +108,8 @@
 	align-items: center;
 	gap: 6px;
 	min-height: 28px;
-	padding-left: 24px;
+	padding-left: var(--cr-gutter);
+	padding-right: var(--cr-trim);
 }
 
 .cr-player-colour {
@@ -301,8 +310,8 @@
 
 .cr-gauge {
 	position: relative;
-	width: 20px;
-	flex: 0 0 20px;
+	width: var(--cr-gauge-w);
+	flex: 0 0 var(--cr-gauge-w);
 	background: #403d39;
 	overflow: hidden;
 	border-radius: 2px;
@@ -348,10 +357,6 @@
 	color: #403d39;
 }
 
-.cr-narrow .cr-gauge {
-	width: 18px;
-	flex-basis: 18px;
-}
 
 /* ---------------- Draw mode ---------------- */
 
@@ -359,7 +364,7 @@
 	display: none;
 	flex-direction: column;
 	gap: 4px;
-	margin: 4px 0 0 24px;
+	margin: 4px var(--cr-trim) 0 var(--cr-gutter);
 	padding: 6px 8px;
 	border-radius: 4px;
 	background: var(--background-secondary);
@@ -370,7 +375,15 @@
 	display: flex;
 }
 
+/* Colours and clear centred; Done on the right. */
 .cr-draw-row {
+	display: grid;
+	grid-template-columns: 1fr auto 1fr;
+	align-items: center;
+}
+
+.cr-draw-tools {
+	grid-column: 2;
 	display: flex;
 	align-items: center;
 	gap: 10px;
@@ -418,12 +431,14 @@
 }
 
 .cr-drawbar-done {
-	margin-left: auto;
+	grid-column: 3;
+	justify-self: end;
 	padding: 2px 12px;
 	font-size: 12px;
 }
 
 .cr-drawbar-hint {
+	text-align: center;
 	color: var(--text-muted);
 	line-height: 1.35;
 }
@@ -441,7 +456,7 @@
 
 .cr-controls {
 	display: flex;
-	margin: 4px 0 0 24px;
+	margin: 4px var(--cr-trim) 0 var(--cr-gutter);
 	border-radius: 4px;
 	background: var(--background-secondary);
 }
@@ -735,7 +750,7 @@
 .cr-graph {
 	position: relative;
 	height: 56px;
-	margin: 6px 0 0 24px;
+	margin: 6px var(--cr-trim) 0 var(--cr-gutter);
 	cursor: pointer;
 	background: #262421;
 	border-radius: 3px;

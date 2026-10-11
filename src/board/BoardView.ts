@@ -101,6 +101,8 @@ const NAG_CLASS: Record<number, string> = { 1: "good", 2: "mistake", 3: "brillia
 const DRAW_WINDOW_MS = 5000;
 /** Engine and threat arrows are thinner than chessground's pale brushes (15). */
 const ENGINE_ARROW_WIDTH = 8;
+/** Threat mode: how long the passed position is searched before normal analysis resumes. */
+const THREAT_MOVETIME_MS = 1500;
 const DRAW_COLOURS: CommentShapeColor[] = ["green", "red", "blue", "yellow"];
 
 /** Position after passing the move (for "show threat"); undefined if that is illegal (in check). */
@@ -152,6 +154,12 @@ export class BoardView {
 	private interactiveTimer?: number;
 	private liveLines: EngineLine[] = [];
 	private liveFen?: string;
+	/** Threat mode: the opponent's best move if it were their turn (shown only as an arrow). */
+	private threatLine?: EngineLine;
+	private threatFen?: string;
+	private threatHandle?: InteractiveHandle;
+	/** Bumped on every restart so callbacks from an older position are ignored. */
+	private engineGen = 0;
 	private cleanups: Array<() => void> = [];
 	private longPressTimer?: number;
 	private lastRightDown = 0;
@@ -873,9 +881,13 @@ export class BoardView {
 	private syncLayout(): void {
 		const container = this.els.cg?.querySelector("cg-container") as HTMLElement | null;
 		if (!container) return;
-		const h = container.getBoundingClientRect().height;
+		const box = container.getBoundingClientRect();
+		const h = box.height;
 		if (!h) return;
 		this.els.evalBar.style.height = `${h}px`;
+		// Panels below the board end at the board's real right edge, not its slightly wider box.
+		const wrap = this.els.cg.getBoundingClientRect();
+		this.root.style.setProperty("--cr-trim", `${Math.max(0, Math.round(wrap.right - box.right))}px`);
 		this.els.side.style.height = this.root.hasClass("cr-narrow") ? "" : `${h}px`;
 	}
 
@@ -896,9 +908,10 @@ export class BoardView {
 		this.root.toggleClass("is-drawing", this.state.drawMode);
 		if (!this.state.drawMode) return;
 		const row = el.createDiv({ cls: "cr-draw-row" });
+		const tools = row.createDiv({ cls: "cr-draw-tools" });
 		// Plain elements, not <button>s: Obsidian's mobile button styles would override colour and size.
 		for (const c of DRAW_COLOURS) {
-			const sw = row.createDiv({
+			const sw = tools.createDiv({
 				cls: `cr-swatch cr-swatch-${c}` + (this.state.drawColour === c ? " is-selected" : ""),
 				attr: { role: "button", tabindex: "0", "aria-label": `Draw in ${c}` },
 			});
@@ -907,7 +920,7 @@ export class BoardView {
 				this.renderDrawBar();
 			});
 		}
-		const clear = row.createDiv({ cls: "cr-draw-tool clickable-icon", attr: { role: "button", tabindex: "0", "aria-label": "Clear all marks on this move" } });
+		const clear = tools.createDiv({ cls: "cr-draw-tool clickable-icon", attr: { role: "button", tabindex: "0", "aria-label": "Clear all marks on this move" } });
 		setIcon(clear, "trash-2");
 		clear.addEventListener("click", () => this.setShapes([]));
 		const done = row.createEl("button", { cls: "cr-drawbar-done", text: "Done" });
@@ -1084,44 +1097,64 @@ export class BoardView {
 		this.updateEvalBar();
 	}
 
-	/** The position the engine looks at: the one on screen, or after a pass in threat mode. */
-	private engineFen(): string | undefined {
-		const fen = infoAt(this.game, this.state.path).fen;
-		return this.state.threatOn ? nullMoveFen(fen) : fen;
-	}
-
 	private stopInteractive(): void {
 		window.clearTimeout(this.interactiveTimer);
+		this.engineGen++;
+		this.threatHandle?.stop();
+		this.threatHandle = undefined;
 		this.interactive?.stop();
 		this.interactive = undefined;
 	}
 
-	/** Restart interactive analysis for the position on screen (stops when you navigate away). */
+	/**
+	 * Restart interactive analysis for the position on screen (stops when you navigate away).
+	 * With threat mode on, a short search of the passed position runs first for the red arrow,
+	 * then the normal analysis of the position continues as usual.
+	 */
 	private restartInteractive(): void {
 		this.stopInteractive();
 		this.liveLines = [];
 		this.liveFen = undefined;
+		this.threatLine = undefined;
+		this.threatFen = undefined;
 		if (!this.state.engineOn) return;
 		const info = infoAt(this.game, this.state.path);
 		if (info.pos.isEnd()) return;
-		const target = this.engineFen();
-		if (!target) return;
-		this.interactiveTimer = window.setTimeout(() => {
-			const fen = target;
+		const gen = this.engineGen;
+		const fen = info.fen;
+		const onError = (e: unknown) => {
+			if (e instanceof EngineNotInstalledError) {
+				this.state.engineOn = false;
+				this.renderEngine();
+				this.host.askDownloadEngine();
+			} else new Notice(`Chess Review: engine error: ${(e as Error).message}`);
+		};
+		const startMain = () => {
+			if (gen !== this.engineGen) return;
 			const h = this.host.engine.interactive(fen, (lines) => {
+				if (gen !== this.engineGen) return;
 				this.liveFen = fen;
 				this.liveLines = lines;
 				this.renderEngine();
 				this.updateEvalBar();
 			});
 			this.interactive = h;
-			h.done.catch((e) => {
-				if (e instanceof EngineNotInstalledError) {
-					this.state.engineOn = false;
-					this.renderEngine();
-					this.host.askDownloadEngine();
-				} else new Notice(`Chess Review: engine error: ${(e as Error).message}`);
-			});
+			h.done.catch(onError);
+		};
+		this.interactiveTimer = window.setTimeout(() => {
+			const passed = this.state.threatOn ? nullMoveFen(fen) : undefined;
+			if (!passed) {
+				startMain();
+				return;
+			}
+			const t = this.host.engine.interactive(passed, (lines) => {
+				if (gen !== this.engineGen || !lines[0]) return;
+				this.threatFen = passed;
+				this.threatLine = lines[0];
+				this.renderEngine();
+			}, { movetimeMs: THREAT_MOVETIME_MS, multiPv: 1 });
+			this.threatHandle = t;
+			t.done.then(startMain, onError);
 		}, 150);
 	}
 
@@ -1166,12 +1199,12 @@ export class BoardView {
 		if (!c) return;
 		const info = infoAt(this.game, this.state.path);
 		const threat = this.state.engineOn && this.state.threatOn;
-		const target = this.engineFen();
+		const passed = threat ? nullMoveFen(info.fen) : undefined;
 		const lines: Array<{ score: Score; pv: string[]; depth: number }> = [];
 		let label = "";
-		if (this.state.engineOn && target && this.liveFen === target) {
+		if (this.state.engineOn && this.liveFen === info.fen) {
 			for (const l of this.liveLines.slice(0, 3)) lines.push({ score: l.score, pv: l.pv, depth: l.depth });
-			if (lines[0]) label = `${threat ? "Threat · " : ""}depth ${lines[0].depth}`;
+			if (lines[0]) label = `depth ${lines[0].depth}`;
 		} else if (!this.state.engineOn) {
 			const p = this.cachedPly();
 			if (p && p.pv.length) {
@@ -1181,17 +1214,17 @@ export class BoardView {
 		}
 		let idle = "Stockfish 18";
 		if (this.state.engineOn) {
-			idle = info.pos.isEnd() ? "Game over" : threat && !target ? "No threat while in check" : threat ? "Threat · calculating…" : "Calculating…";
+			idle = info.pos.isEnd() ? "Game over" : "Calculating…";
 		}
+		if (threat && !info.pos.isEnd()) label = `${passed ? "Threat shown" : "No threat in check"} · ${label || idle}`;
 		c.input.checked = this.state.engineOn;
-		// In threat mode the evaluation shown stays the position's own; the threat is only an arrow.
-		const gauge = this.currentScore();
-		c.score.setText(threat ? (gauge ? formatScore(gauge) : "") : lines[0] ? formatScore(lines[0].score) : "");
+		c.score.setText(lines[0] ? formatScore(lines[0].score) : "");
 		c.label.setText(label || idle);
 
 		this.ensurePvRows(this.state.engineOn ? 3 : 1);
+		// The lines are always the position's own; the threat is only an arrow on the board.
 		c.rows.forEach((row, i) => {
-			const l = threat ? undefined : lines[i];
+			const l = lines[i];
 			c.rowPvs[i] = l?.pv ?? [];
 			row.el.toggleClass("is-empty", !l);
 			row.el.setAttribute("aria-label", l ? "Play the first move" : "");
@@ -1200,15 +1233,13 @@ export class BoardView {
 		});
 
 		const auto: DrawShape[] = [];
-		const best = lines[0]?.pv[0];
-		if (best && best.length >= 4) {
-			auto.push({
-				orig: best.slice(0, 2) as Key,
-				dest: best.slice(2, 4) as Key,
-				brush: threat ? "paleRed" : "paleBlue",
-				modifiers: { lineWidth: ENGINE_ARROW_WIDTH },
-			});
-		}
+		const arrow = (uci: string | undefined, brush: string) => {
+			if (uci && uci.length >= 4) {
+				auto.push({ orig: uci.slice(0, 2) as Key, dest: uci.slice(2, 4) as Key, brush, modifiers: { lineWidth: ENGINE_ARROW_WIDTH } });
+			}
+		};
+		arrow(lines[0]?.pv[0], "paleBlue");
+		if (threat && passed && this.threatFen === passed) arrow(this.threatLine?.pv[0], "paleRed");
 		this.engineShapes = auto;
 		this.refreshAutoShapes();
 	}
