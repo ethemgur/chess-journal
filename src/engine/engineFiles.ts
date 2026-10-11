@@ -1,10 +1,13 @@
 /**
  * Stockfish 18 lite single-threaded WASM: downloaded on first use from the
- * plugin's own GitHub release, verified by SHA-256, stored in the plugin folder.
+ * plugin's own GitHub release (same tag as the installed version), verified by
+ * SHA-256, stored in the plugin folder.
  */
 import { requestUrl } from "obsidian";
 
-export const ENGINE_RELEASE_BASE = "https://github.com/ethemgur/chess-journal/releases/download/engine-sf18";
+/** Engine files are attached to every plugin release, next to main.js. */
+export const engineReleaseBase = (version: string) =>
+	`https://github.com/ethemgur/chess-journal/releases/download/${version}`;
 
 export interface EngineFile {
 	name: string;
@@ -53,7 +56,11 @@ export interface EngineStorage {
 }
 
 export class EngineFiles {
-	constructor(private storage: EngineStorage, private dir: string) {}
+	constructor(private storage: EngineStorage, private dir: string, private version: string) {}
+
+	get source(): string {
+		return engineReleaseBase(this.version);
+	}
 
 	path(f: EngineFile): string {
 		return `${this.dir}/engine/${f.name}`;
@@ -70,7 +77,7 @@ export class EngineFiles {
 		// Download and verify everything before saving anything.
 		for (const f of ENGINE_FILES) {
 			onProgress?.(`Downloading ${f.name} (${(f.bytes / 1_000_000).toFixed(1)} MB)…`);
-			const res = await requestUrl({ url: `${ENGINE_RELEASE_BASE}/${f.name}`, throw: false });
+			const res = await requestUrl({ url: `${this.source}/${f.name}`, throw: false });
 			if (res.status !== 200) throw new Error(`Download of ${f.name} failed (HTTP ${res.status}).`);
 			await verify(f, res.arrayBuffer);
 			bufs.push(res.arrayBuffer);

@@ -7,7 +7,7 @@ import { obsidianHttp } from "./sources/http";
 import { openPgnImport } from "./sources/pgnFile";
 import { registerChessGameBlock, clearBlockStates } from "./board/codeBlock";
 import type { BoardView } from "./board/BoardView";
-import { ENGINE_RELEASE_BASE, ENGINE_TOTAL_MB, EngineFiles } from "./engine/engineFiles";
+import { ENGINE_TOTAL_MB, EngineFiles } from "./engine/engineFiles";
 import { EngineService } from "./engine/service";
 import { AnalysisCache } from "./engine/cache";
 import { AnalysisQueue, QueueState } from "./engine/queue";
@@ -49,6 +49,7 @@ export default class ChessReviewPlugin extends Plugin {
 				mkdir: (p) => adapter.mkdir(p),
 			},
 			dir,
+			this.manifest.version,
 		);
 		this.cache = new AnalysisCache(
 			{
@@ -438,7 +439,7 @@ export default class ChessReviewPlugin extends Plugin {
 	confirmEngineDownload(force = false): void {
 		void (async () => {
 			if (!force && (await this.engine.installed())) return;
-			new EngineDownloadModal(this.app, async () => {
+			new EngineDownloadModal(this.app, this.engineFiles.source, async () => {
 				const n = new Notice("Chess Review: downloading engine…", 0);
 				try {
 					await this.engineFiles.download((m) => n.setMessage(`Chess Review: ${m}`));
@@ -456,7 +457,7 @@ export default class ChessReviewPlugin extends Plugin {
 }
 
 class EngineDownloadModal extends Modal {
-	constructor(app: App, private onConfirm: () => Promise<void>) {
+	constructor(app: App, private source: string, private onConfirm: () => Promise<void>) {
 		super(app);
 	}
 
@@ -466,7 +467,7 @@ class EngineDownloadModal extends Modal {
 		contentEl.createEl("p", {
 			text: `Analysis uses Stockfish 18 (lite, single-threaded WebAssembly build, GPL-3.0). It is about ${ENGINE_TOTAL_MB} MB and is downloaded once from the plugin's GitHub release, checked against a SHA-256 hash, and stored in the plugin folder.`,
 		});
-		contentEl.createEl("p", { cls: "cr-muted", text: `Source: ${ENGINE_RELEASE_BASE}/` });
+		contentEl.createEl("p", { cls: "cr-muted", text: `Source: ${this.source}/` });
 		new Setting(contentEl)
 			.addButton((b) => b.setButtonText("Download").setCta().onClick(() => {
 				this.close();

@@ -1,6 +1,6 @@
 {
   "name": "chess-review",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sync chess games from Lichess, chess.com and PGN files into one reviewable note per game, with an interactive board and offline Stockfish analysis.",
   "main": "main.js",
   "type": "module",
@@ -15,7 +15,13 @@
     "type": "git",
     "url": "git+https://github.com/ethemgur/chess-journal.git"
   },
-  "keywords": ["obsidian", "chess", "pgn", "lichess", "stockfish"],
+  "keywords": [
+    "obsidian",
+    "chess",
+    "pgn",
+    "lichess",
+    "stockfish"
+  ],
   "author": "Ethem",
   "license": "GPL-3.0-or-later",
   "dependencies": {

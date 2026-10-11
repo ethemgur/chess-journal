@@ -22,9 +22,26 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      # Stockfish files ride along on every release; the plugin downloads them
+      # from its own version's release on first use (not installed by BRAT or
+      # the community store, which only take main.js/manifest.json/styles.css).
+      - name: Fetch and verify Stockfish
+        run: |
+          mkdir -p /tmp/sf && cd /tmp/sf
+          npm pack stockfish@18.0.8 >/dev/null
+          tar xzf stockfish-18.0.8.tgz
+          cp package/bin/stockfish-18-lite-single.js package/bin/stockfish-18-lite-single.wasm "$GITHUB_WORKSPACE"/
+          cd "$GITHUB_WORKSPACE"
+          node -e '
+            const fs = require("fs"), crypto = require("crypto");
+            const src = fs.readFileSync("src/engine/engineFiles.ts", "utf8");
+            for (const f of ["stockfish-18-lite-single.js", "stockfish-18-lite-single.wasm"]) {
+              const h = crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex");
+              if (!src.includes(h)) { console.error("hash mismatch for " + f + ": " + h); process.exit(1); }
+            }'
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then tag="$GITHUB_REF_NAME"; else tag="$(node -p 'require("./manifest.json").version')"; fi
-          gh release create "$tag" --target "$GITHUB_SHA" --title="$tag" --generate-notes main.js manifest.json styles.css
+          gh release create "$tag" --target "$GITHUB_SHA" --title="$tag" --generate-notes main.js manifest.json styles.css stockfish-18-lite-single.js stockfish-18-lite-single.wasm

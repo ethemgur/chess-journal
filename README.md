@@ -108,7 +108,7 @@ All requests go through Obsidian's `requestUrl`, one at a time. There is no tele
 | --- | --- |
 | `lichess.org` | Export your finished games (`/api/games/user/…`), and cloud evaluations for opening positions (`/api/cloud-eval`). If you set a Lichess token, it is sent only to lichess.org. |
 | `api.chess.com` | Read your finished games from the public archives (`/pub/player/…/games/…`). Requests carry a User-Agent with your chess.com username and the contact email you entered. |
-| `github.com` (release downloads) | Download the Stockfish engine files once, from this plugin's own GitHub release. They are checked against SHA-256 hashes built into the plugin. |
+| `github.com` (release downloads) | Download the Stockfish engine files once, from the GitHub release of the installed plugin version. They are checked against SHA-256 hashes built into the plugin. |
 
 Usernames and tokens are stored only in the plugin's `data.json`. They are never written into notes or logs.
 
@@ -150,5 +150,5 @@ tests/                 vitest tests and PGN fixtures
 
 ### Releasing
 
-- `npm version patch|minor|major` bumps `manifest.json` and `versions.json`. Push the tag, and the **Release** workflow builds and drafts a GitHub release with `main.js`, `manifest.json` and `styles.css`.
-- **Engine files:** run the **Engine release** workflow (manual) once. It publishes `stockfish-18-lite-single.js` and `.wasm` from the `stockfish@18.0.8` npm package to the `engine-sf18` release, after checking that their hashes match `src/engine/engineFiles.ts`. The plugin downloads them from there.
+- `npm version patch|minor|major` bumps `manifest.json` and `versions.json`. Push, then run the **Release** workflow (or push a tag). It publishes a release named after the manifest version with `main.js`, `manifest.json` and `styles.css` (what BRAT and the community store install).
+- Each release also carries `stockfish-18-lite-single.js` and `.wasm` (from the `stockfish@18.0.8` npm package, hash-checked against `src/engine/engineFiles.ts`). The plugin downloads them from its own version's release.
