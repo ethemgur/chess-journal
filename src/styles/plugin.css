@@ -74,6 +74,7 @@
 	/* Take the board row's height; never stretch it. */
 	contain: size;
 	min-height: 0;
+	align-self: start;
 	display: flex;
 	flex-direction: column;
 	background: var(--background-secondary);
@@ -149,6 +150,8 @@
 .cr-board-row {
 	display: flex;
 	gap: 4px;
+	/* The gauge gets the board's exact pixel height from code. */
+	align-items: flex-start;
 }
 
 .cr-cg-wrap {
@@ -397,6 +400,25 @@
 	background: #e68f00;
 }
 
+.cr-draw-tools {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: none;
+}
+
+.cr-draw-tool {
+	padding: 3px;
+	height: auto;
+	border-radius: 4px;
+	color: var(--text-muted);
+}
+
+.cr-draw-tool.is-selected {
+	background: var(--cr-active);
+	color: var(--text-normal);
+}
+
 .cr-drawbar-hint {
 	flex: 1;
 	color: var(--text-muted);
@@ -409,6 +431,11 @@
 
 .is-drawing .cr-cg-wrap {
 	cursor: crosshair;
+}
+
+/* While drawing, a drag on the board draws instead of scrolling the note. */
+.is-drawing .cr-cg {
+	touch-action: none;
 }
 
 /* ---------------- Controls ---------------- */
@@ -620,21 +647,8 @@
 	text-overflow: ellipsis;
 }
 
-.cr-threat {
-	margin-left: auto;
-	padding: 2px;
-	height: auto;
-	color: var(--text-faint);
-}
 
-.cr-threat svg {
-	width: 14px;
-	height: 14px;
-}
 
-.cr-threat.is-on {
-	color: #c33;
-}
 
 
 .cr-switch {

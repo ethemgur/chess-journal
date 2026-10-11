@@ -62,6 +62,7 @@ export interface BlockState {
 	threatOn: boolean;
 	drawMode: boolean;
 	drawColour: CommentShapeColor;
+	drawErase: boolean;
 	hadFocus: boolean;
 	rendered: boolean;
 }
@@ -75,6 +76,7 @@ export const newBlockState = (): BlockState => ({
 	threatOn: false,
 	drawMode: false,
 	drawColour: "green",
+	drawErase: false,
 	hadFocus: false,
 	rendered: false,
 });
@@ -156,7 +158,10 @@ export class BoardView {
 	private longPressTimer?: number;
 	private lastRightDown = 0;
 	private lastSaved: string;
-	private drawPending?: Key;
+	/** Draw mode gesture: the square the press started on, and the live preview shape. */
+	private drawStart?: Key;
+	private drawPreview?: DrawShape;
+	private engineShapes: DrawShape[] = [];
 	private lastGauge?: Score;
 	/** Move elements by path, so navigation only moves the highlight. */
 	private moveEls = new Map<string, HTMLElement>();
@@ -165,7 +170,6 @@ export class BoardView {
 		input: HTMLInputElement;
 		score: HTMLElement;
 		label: HTMLElement;
-		threat: HTMLElement;
 		pvs: HTMLElement;
 		rows: Array<{ el: HTMLElement; score: HTMLElement; moves: HTMLElement }>;
 		rowPvs: string[][];
@@ -210,6 +214,7 @@ export class BoardView {
 		this.els.drawBar = main.createDiv({ cls: "cr-drawbar" });
 		this.els.graph = main.createDiv({ cls: "cr-graph" });
 		const side = main.createDiv({ cls: "cr-side" });
+		this.els.side = side;
 		this.els.engine = side.createDiv({ cls: "cr-ceval" });
 		this.els.moves = side.createDiv({ cls: "cr-moves" });
 
@@ -239,6 +244,7 @@ export class BoardView {
 		void this.reloadAnalysis();
 		this.cleanups.push(this.host.onAnalysisChange(() => void this.reloadAnalysis()));
 		this.update(true);
+		window.requestAnimationFrame(() => this.syncLayout());
 		this.state.rendered = true;
 		if (this.state.hadFocus) {
 			this.state.hadFocus = false;
@@ -316,17 +322,51 @@ export class BoardView {
 		on(this.els.cg, "pointerdown", (e) => {
 			if (e.button === 2) this.lastRightDown = Date.now();
 		}, { capture: true });
-		// Draw mode: tap two squares for an arrow, one square twice for a circle.
-		on(this.els.cg, "pointerup", (e) => {
+		// Draw mode: drag from one square to another for an arrow, tap a square for a circle.
+		// The board's own move handling is kept out of it while drawing.
+		for (const ev of ["mousedown", "touchstart"] as const) {
+			on(this.els.cg, ev, (e) => {
+				if (this.state.drawMode) e.stopPropagation();
+			}, { capture: true });
+		}
+		on(this.els.cg, "pointerdown", (e) => {
 			if (!this.state.drawMode || e.button !== 0) return;
-			const key = this.cg?.getKeyAtDomPos([e.clientX, e.clientY]);
-			if (key) this.onDrawTap(key);
+			e.preventDefault();
+			this.drawStart = this.cg?.getKeyAtDomPos([e.clientX, e.clientY]);
+			if (this.drawStart) {
+				try {
+					this.els.cg.setPointerCapture(e.pointerId);
+				} catch {
+					// Not capturable (e.g. a synthetic pointer); moves still arrive while over the board.
+				}
+			}
+			this.updateDrawPreview(this.drawStart);
 		});
+		on(this.els.cg, "pointermove", (e) => {
+			if (!this.state.drawMode || !this.drawStart) return;
+			this.updateDrawPreview(this.cg?.getKeyAtDomPos([e.clientX, e.clientY]));
+		});
+		on(this.els.cg, "pointerup", (e) => {
+			if (!this.state.drawMode || !this.drawStart) return;
+			const end = this.cg?.getKeyAtDomPos([e.clientX, e.clientY]);
+			const start = this.drawStart;
+			this.drawStart = undefined;
+			this.drawPreview = undefined;
+			this.refreshAutoShapes();
+			if (end) this.applyDraw(start, end);
+		});
+		on(this.els.cg, "pointercancel", () => {
+			this.drawStart = undefined;
+			this.drawPreview = undefined;
+			this.refreshAutoShapes();
+		});
+		// Only our layout reacts to size changes; chessground resizes itself (redrawAll would rebuild the board).
 		const ro = new ResizeObserver(() => {
 			this.root.toggleClass("cr-narrow", this.root.clientWidth < 560);
-			this.cg?.redrawAll();
+			window.requestAnimationFrame(() => this.syncLayout());
 		});
 		ro.observe(this.root);
+		ro.observe(this.els.cg);
 		this.cleanups.push(() => ro.disconnect());
 	}
 
@@ -810,7 +850,9 @@ export class BoardView {
 		this.host = host;
 		this.container = container;
 		container.appendChild(this.root);
-		window.requestAnimationFrame(() => this.cg?.redrawAll());
+		// Keep the board's DOM as it is; just let chessground re-measure its position.
+		this.cg?.state.dom.bounds.clear();
+		window.requestAnimationFrame(() => this.syncLayout());
 		if (this.state.hadFocus) {
 			this.state.hadFocus = false;
 			this.root.focus({ preventScroll: true });
@@ -821,9 +863,23 @@ export class BoardView {
 	/* Draw mode (touch-friendly arrows and circles)                */
 	/* ------------------------------------------------------------ */
 
+	/**
+	 * The gauge and the move list match the board's real size (chessground rounds the
+	 * board to whole pixels per square, so it can be a little smaller than its box).
+	 */
+	private syncLayout(): void {
+		const container = this.els.cg?.querySelector("cg-container") as HTMLElement | null;
+		if (!container) return;
+		const h = container.getBoundingClientRect().height;
+		if (!h) return;
+		this.els.evalBar.style.height = `${h}px`;
+		this.els.side.style.height = this.root.hasClass("cr-narrow") ? "" : `${h}px`;
+	}
+
 	private setDrawMode(on: boolean): void {
 		this.state.drawMode = on;
-		this.drawPending = undefined;
+		this.drawStart = undefined;
+		this.drawPreview = undefined;
 		this.root.toggleClass("is-drawing", on);
 		this.renderDrawBar();
 		this.update();
@@ -836,39 +892,78 @@ export class BoardView {
 		el.toggleClass("is-open", this.state.drawMode);
 		this.root.toggleClass("is-drawing", this.state.drawMode);
 		if (!this.state.drawMode) return;
+		const tools = el.createDiv({ cls: "cr-draw-tools" });
 		for (const c of DRAW_COLOURS) {
-			const b = el.createEl("button", { cls: `cr-swatch cr-swatch-${c}` + (this.state.drawColour === c ? " is-selected" : ""), attr: { "aria-label": c } });
+			const selected = !this.state.drawErase && this.state.drawColour === c;
+			const b = tools.createEl("button", { cls: `cr-swatch cr-swatch-${c}` + (selected ? " is-selected" : ""), attr: { "aria-label": `Draw in ${c}` } });
 			b.addEventListener("click", () => {
 				this.state.drawColour = c;
+				this.state.drawErase = false;
 				this.renderDrawBar();
 			});
 		}
-		el.createSpan({ cls: "cr-drawbar-hint", text: "Tap two squares for an arrow, a square twice for a circle." });
+		const eraser = tools.createEl("button", {
+			cls: "cr-draw-tool clickable-icon" + (this.state.drawErase ? " is-selected" : ""),
+			attr: { "aria-label": "Eraser: tap a square or drag over an arrow to remove it" },
+		});
+		setIcon(eraser, "eraser");
+		eraser.addEventListener("click", () => {
+			this.state.drawErase = !this.state.drawErase;
+			this.renderDrawBar();
+		});
+		const clear = tools.createEl("button", { cls: "cr-draw-tool clickable-icon", attr: { "aria-label": "Clear all marks on this move" } });
+		setIcon(clear, "trash-2");
+		clear.addEventListener("click", () => this.setShapes([]));
+		el.createSpan({
+			cls: "cr-drawbar-hint",
+			text: this.state.drawErase ? "Tap a square or drag along an arrow to remove it." : "Drag for an arrow, tap for a circle. Repeat to remove.",
+		});
 		const done = el.createEl("button", { cls: "cr-drawbar-done", text: "Done" });
 		done.addEventListener("click", () => this.setDrawMode(false));
 	}
 
-	private onDrawTap(key: Key): void {
-		if (!this.drawPending) {
-			this.drawPending = key;
-			this.renderEngine(); // refreshes auto shapes, including the pending marker
-			return;
+	private updateDrawPreview(to?: Key): void {
+		const from = this.drawStart;
+		if (!from || !to) this.drawPreview = undefined;
+		else {
+			const brush = this.state.drawErase ? "paleGrey" : BRUSH[this.state.drawColour];
+			this.drawPreview = from === to ? { orig: from, brush } : { orig: from, dest: to, brush };
 		}
-		const from = parseSquare(this.drawPending);
-		const to = parseSquare(key);
-		this.drawPending = undefined;
-		if (from === undefined || to === undefined) return;
+		this.refreshAutoShapes();
+	}
+
+	/** Toggle a circle (start = end) or an arrow; the eraser removes instead. */
+	private applyDraw(start: Key, end: Key): void {
+		const from = parseSquare(start);
+		const to = parseSquare(end);
+		const node = nodeAt(this.game, this.state.path);
+		if (from === undefined || to === undefined || !node) return;
+		let shapes = commentOf(node, this.game).shapes.slice();
+		if (this.state.drawErase) {
+			shapes = from === to
+				? shapes.filter((s) => s.from !== from && s.to !== from)
+				: shapes.filter((s) => !(s.from === from && s.to === to) && !(s.from === to && s.to === from));
+		} else {
+			const colour = this.state.drawColour;
+			const i = shapes.findIndex((s) => s.from === from && s.to === to);
+			if (i >= 0 && shapes[i].color === colour) shapes.splice(i, 1);
+			else if (i >= 0) shapes[i] = { color: colour, from, to };
+			else shapes.push({ color: colour, from, to });
+		}
+		this.setShapes(shapes);
+	}
+
+	/** Save the marks of the move on screen (as %cal/%csl in its comment) without touching the board. */
+	private setShapes(shapes: CommentShape[]): void {
 		const node = nodeAt(this.game, this.state.path);
 		if (!node) return;
-		const colour = this.state.drawColour;
-		const shapes = commentOf(node, this.game).shapes.slice();
-		const i = shapes.findIndex((s) => s.from === from && s.to === to);
-		if (i >= 0 && shapes[i].color === colour) shapes.splice(i, 1);
-		else if (i >= 0) shapes[i] = { color: colour, from, to };
-		else shapes.push({ color: colour, from, to });
+		if (JSON.stringify(commentOf(node, this.game).shapes) === JSON.stringify(shapes)) return;
 		this.edit(() => updateComment(this.game, this.state.path, { shapes }), false);
 		this.cg?.setShapes(shapes.map(toDrawShape));
-		this.renderEngine();
+	}
+
+	private refreshAutoShapes(): void {
+		this.cg?.setAutoShapes(this.drawPreview ? [...this.engineShapes, this.drawPreview] : this.engineShapes);
 	}
 
 	/* ------------------------------------------------------------ */
@@ -1054,11 +1149,8 @@ export class BoardView {
 		input.addEventListener("change", () => this.toggleEngine(input.checked));
 		const score = head.createSpan({ cls: "cr-ceval-score" });
 		const label = head.createSpan({ cls: "cr-ceval-label" });
-		const threat = head.createEl("button", { cls: "cr-threat clickable-icon", attr: { "aria-label": "Show threat (X)" } });
-		setIcon(threat, "crosshair");
-		threat.addEventListener("click", () => this.toggleThreat());
 		const pvs = el.createDiv({ cls: "cr-pvs" });
-		this.ceval = { input, score, label, threat, pvs, rows: [], rowPvs: [] };
+		this.ceval = { input, score, label, pvs, rows: [], rowPvs: [] };
 	}
 
 	/** Fixed number of PV rows: 3 with the engine on, 1 (saved line) with it off. */
@@ -1105,7 +1197,6 @@ export class BoardView {
 			idle = info.pos.isEnd() ? "Game over" : threat && !target ? "No threat while in check" : threat ? "Threat · calculating…" : "Calculating…";
 		}
 		c.input.checked = this.state.engineOn;
-		c.threat.toggleClass("is-on", this.state.threatOn);
 		// In threat mode the evaluation shown stays the position's own; the threat is only an arrow.
 		const gauge = this.currentScore();
 		c.score.setText(threat ? (gauge ? formatScore(gauge) : "") : lines[0] ? formatScore(lines[0].score) : "");
@@ -1122,7 +1213,6 @@ export class BoardView {
 		});
 
 		const auto: DrawShape[] = [];
-		if (this.drawPending) auto.push({ orig: this.drawPending, brush: BRUSH[this.state.drawColour] });
 		const best = lines[0]?.pv[0];
 		if (best && best.length >= 4) {
 			auto.push({
@@ -1132,7 +1222,8 @@ export class BoardView {
 				modifiers: { lineWidth: ENGINE_ARROW_WIDTH },
 			});
 		}
-		this.cg?.setAutoShapes(auto);
+		this.engineShapes = auto;
+		this.refreshAutoShapes();
 	}
 
 	private pvSan(start: Position, pv: string[]): string {
