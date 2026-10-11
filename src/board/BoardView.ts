@@ -62,7 +62,6 @@ export interface BlockState {
 	threatOn: boolean;
 	drawMode: boolean;
 	drawColour: CommentShapeColor;
-	drawErase: boolean;
 	hadFocus: boolean;
 	rendered: boolean;
 }
@@ -76,7 +75,6 @@ export const newBlockState = (): BlockState => ({
 	threatOn: false,
 	drawMode: false,
 	drawColour: "green",
-	drawErase: false,
 	hadFocus: false,
 	rendered: false,
 });
@@ -840,6 +838,11 @@ export class BoardView {
 		return serialise(this.game);
 	}
 
+	/** Current height on screen, so a block about to take this board can reserve the space. */
+	height(): number {
+		return this.root.offsetHeight;
+	}
+
 	/** The PGN last written to the note (what a re-rendered block will contain). */
 	savedPgn(): string {
 		return this.lastSaved;
@@ -892,64 +895,48 @@ export class BoardView {
 		el.toggleClass("is-open", this.state.drawMode);
 		this.root.toggleClass("is-drawing", this.state.drawMode);
 		if (!this.state.drawMode) return;
-		const tools = el.createDiv({ cls: "cr-draw-tools" });
+		const row = el.createDiv({ cls: "cr-draw-row" });
+		// Plain elements, not <button>s: Obsidian's mobile button styles would override colour and size.
 		for (const c of DRAW_COLOURS) {
-			const selected = !this.state.drawErase && this.state.drawColour === c;
-			const b = tools.createEl("button", { cls: `cr-swatch cr-swatch-${c}` + (selected ? " is-selected" : ""), attr: { "aria-label": `Draw in ${c}` } });
-			b.addEventListener("click", () => {
+			const sw = row.createDiv({
+				cls: `cr-swatch cr-swatch-${c}` + (this.state.drawColour === c ? " is-selected" : ""),
+				attr: { role: "button", tabindex: "0", "aria-label": `Draw in ${c}` },
+			});
+			sw.addEventListener("click", () => {
 				this.state.drawColour = c;
-				this.state.drawErase = false;
 				this.renderDrawBar();
 			});
 		}
-		const eraser = tools.createEl("button", {
-			cls: "cr-draw-tool clickable-icon" + (this.state.drawErase ? " is-selected" : ""),
-			attr: { "aria-label": "Eraser: tap a square or drag over an arrow to remove it" },
-		});
-		setIcon(eraser, "eraser");
-		eraser.addEventListener("click", () => {
-			this.state.drawErase = !this.state.drawErase;
-			this.renderDrawBar();
-		});
-		const clear = tools.createEl("button", { cls: "cr-draw-tool clickable-icon", attr: { "aria-label": "Clear all marks on this move" } });
+		const clear = row.createDiv({ cls: "cr-draw-tool clickable-icon", attr: { role: "button", tabindex: "0", "aria-label": "Clear all marks on this move" } });
 		setIcon(clear, "trash-2");
 		clear.addEventListener("click", () => this.setShapes([]));
-		el.createSpan({
-			cls: "cr-drawbar-hint",
-			text: this.state.drawErase ? "Tap a square or drag along an arrow to remove it." : "Drag for an arrow, tap for a circle. Repeat to remove.",
-		});
-		const done = el.createEl("button", { cls: "cr-drawbar-done", text: "Done" });
+		const done = row.createEl("button", { cls: "cr-drawbar-done", text: "Done" });
 		done.addEventListener("click", () => this.setDrawMode(false));
+		el.createDiv({ cls: "cr-drawbar-hint", text: "Drag between squares for an arrow, tap a square for a circle. Draw the same mark again to remove it." });
 	}
 
 	private updateDrawPreview(to?: Key): void {
 		const from = this.drawStart;
 		if (!from || !to) this.drawPreview = undefined;
 		else {
-			const brush = this.state.drawErase ? "paleGrey" : BRUSH[this.state.drawColour];
+			const brush = BRUSH[this.state.drawColour];
 			this.drawPreview = from === to ? { orig: from, brush } : { orig: from, dest: to, brush };
 		}
 		this.refreshAutoShapes();
 	}
 
-	/** Toggle a circle (start = end) or an arrow; the eraser removes instead. */
+	/** Toggle a circle (start = end) or an arrow: the same mark again removes it, another colour recolours it. */
 	private applyDraw(start: Key, end: Key): void {
 		const from = parseSquare(start);
 		const to = parseSquare(end);
 		const node = nodeAt(this.game, this.state.path);
 		if (from === undefined || to === undefined || !node) return;
-		let shapes = commentOf(node, this.game).shapes.slice();
-		if (this.state.drawErase) {
-			shapes = from === to
-				? shapes.filter((s) => s.from !== from && s.to !== from)
-				: shapes.filter((s) => !(s.from === from && s.to === to) && !(s.from === to && s.to === from));
-		} else {
-			const colour = this.state.drawColour;
-			const i = shapes.findIndex((s) => s.from === from && s.to === to);
-			if (i >= 0 && shapes[i].color === colour) shapes.splice(i, 1);
-			else if (i >= 0) shapes[i] = { color: colour, from, to };
-			else shapes.push({ color: colour, from, to });
-		}
+		const shapes = commentOf(node, this.game).shapes.slice();
+		const colour = this.state.drawColour;
+		const i = shapes.findIndex((sh) => sh.from === from && sh.to === to);
+		if (i >= 0 && shapes[i].color === colour) shapes.splice(i, 1);
+		else if (i >= 0) shapes[i] = { color: colour, from, to };
+		else shapes.push({ color: colour, from, to });
 		this.setShapes(shapes);
 	}
 
