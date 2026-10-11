@@ -205,6 +205,7 @@ class ChessGameBlock extends MarkdownRenderChild {
 			save: (pgn, expected) => this.save(pgn, expected, gameKey),
 			askDownloadEngine: () => plugin.confirmEngineDownload(),
 			setActive: (v) => plugin.setActiveBoard(v),
+			onGoto: gameKey ? (fn) => plugin.subscribeGoto(gameKey, fn) : undefined,
 		};
 	}
 

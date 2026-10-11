@@ -31,6 +31,8 @@ export interface QueueHost {
 	canRun(): boolean;
 	readGame(key: string): Promise<{ pgn: string; myColour: Colour } | undefined>;
 	writeResult(key: string, values: Frontmatter): Promise<void>;
+	/** Called after a game's analysis is saved (the dashboard derives its summary here). */
+	onAnalysed?(key: string, pgn: string, analysis: GameAnalysis): Promise<void>;
 	setStatus(key: string, status: AnalysisStatus): Promise<void>;
 	status(text: string | null): void;
 	notify(text: string): void;
@@ -247,5 +249,6 @@ export class AnalysisQueue {
 			"opp-mistakes": opp.mistakes,
 			"opp-blunders": opp.blunders,
 		});
+		await this.host.onAnalysed?.(key, game.pgn, analysis);
 	}
 }

@@ -92,6 +92,8 @@ export interface BoardHost {
 	save(pgn: string, expected: string): Promise<void>;
 	askDownloadEngine(): void;
 	setActive(view: BoardView | null): void;
+	/** Jump requests for this game (e.g. from the dashboard): main-line ply numbers. */
+	onGoto?(fn: (ply: number) => void): () => void;
 }
 
 const MARK_LABEL: Record<Mark, string> = { inaccuracy: "Inaccuracy", mistake: "Mistake", blunder: "Blunder" };
@@ -252,6 +254,8 @@ export class BoardView {
 		this.buildEngine();
 		void this.reloadAnalysis();
 		this.cleanups.push(this.host.onAnalysisChange(() => void this.reloadAnalysis()));
+		const unsubGoto = this.host.onGoto?.((ply) => this.gotoPly(ply));
+		if (unsubGoto) this.cleanups.push(unsubGoto);
 		this.update(true);
 		window.requestAnimationFrame(() => this.syncLayout());
 		this.state.rendered = true;
@@ -405,6 +409,13 @@ export class BoardView {
 		if (!nodeAt(this.game, path)) return;
 		this.state.path = path;
 		this.update();
+	}
+
+	/** Go to a main-line ply (0 = start) and bring the board into view. */
+	gotoPly(ply: number): void {
+		const length = mainline(this.game).length - 1;
+		this.goto(new Array(Math.max(0, Math.min(ply, length))).fill(0));
+		this.root.scrollIntoView({ block: "center", behavior: "smooth" });
 	}
 
 	private next(): void {

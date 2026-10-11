@@ -100,9 +100,21 @@ Your edits (moves, comments, symbols, arrows and circles) are written into the n
 - The queue survives restarts. Pause, resume or cancel it from the command palette or the status bar.
 - On mobile, analysis is off unless you turn on **Analyse on mobile**, and it pauses while the app is in the background.
 
+## Performance dashboard
+
+**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes and their engine analysis. It measures causes, not just results:
+
+- **Rating cards:** live ratings from Lichess and chess.com per time class, never merged across sites, with the change over the period. Offline, the latest rating from your notes is shown, marked "from games".
+- **Stat cards:** score, score vs expected (from pre-game ratings), performance rating (per site and time class), error rate (mistakes and blunders per 10 moves), weakest phase (your error rate against your opponents' in the same games) and conversion of winning positions. Each card compares with the previous period of the same length.
+- **Panels:** rating history · against stronger and weaker · openings (with eval after move 15, to tell the opening from the play after it) · conversion and saves · errors by phase · time management · trend (rolling 20 games) · biggest swings · review queue.
+
+Click a figure, bar or row to filter the dashboard or to see the games behind it; games open at the move that matters. **Mark reviewed** in the review queue sets `reviewed: true` in that note, the dashboard's only write. Engine-based figures use only games analysed with the current engine setting, and any figure from fewer than 5 games (configurable) shows the game count instead.
+
+Per-game figures are derived once after analysis and stored in `summaries.json` in the plugin folder; they are rebuilt from the analysis cache (without running the engine) when the plugin updates how they are derived or when you change the winning threshold.
+
 ## Commands
 
-Sync all games · Sync Lichess games · Sync chess.com games · Cancel sync · Import PGN file · Analyse this game · Analyse all unanalysed games · Re-analyse with current settings · Pause / resume analysis · Cancel analysis · Open game on site · Copy PGN · Download engine
+Open performance dashboard · Sync all games · Sync Lichess games · Sync chess.com games · Cancel sync · Import PGN file · Analyse this game · Analyse all unanalysed games · Re-analyse with current settings · Pause / resume analysis · Cancel analysis · Open game on site · Copy PGN · Download engine
 
 ## Network use and privacy
 
@@ -110,8 +122,8 @@ All requests go through Obsidian's `requestUrl`, one at a time. There is no tele
 
 | Host | Why |
 | --- | --- |
-| `lichess.org` | Export your finished games (`/api/games/user/…`), and cloud evaluations for opening positions (`/api/cloud-eval`). If you set a Lichess token, it is sent only to lichess.org. |
-| `api.chess.com` | Read your finished games from the public archives (`/pub/player/…/games/…`). Requests carry a User-Agent with your chess.com username and the contact email you entered. |
+| `lichess.org` | Export your finished games (`/api/games/user/…`), cloud evaluations for opening positions (`/api/cloud-eval`), and your current ratings for the dashboard (`/api/user/…`, cached for 5 minutes). If you set a Lichess token, it is sent only to lichess.org. |
+| `api.chess.com` | Read your finished games from the public archives (`/pub/player/…/games/…`), and your current ratings for the dashboard (`/pub/player/…/stats`, cached for an hour). Requests carry a User-Agent with your chess.com username and the contact email you entered. |
 | `github.com` (release downloads) | Download the Stockfish engine files once, from the GitHub release of the installed plugin version. They are checked against SHA-256 hashes built into the plugin. |
 
 Usernames and tokens are stored only in the plugin's `data.json`. They are never written into notes or logs.

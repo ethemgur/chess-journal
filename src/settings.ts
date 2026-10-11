@@ -32,6 +32,12 @@ export interface ChessJournalSettings {
 	boardTheme: string;
 	showClocks: boolean;
 	orientation: Orientation;
+	// Dashboard
+	dashboardPeriod: "30d" | "3m" | "12m" | "all";
+	dashboardPalette: "accent" | "semantic" | "soft";
+	dashboardMinGames: number;
+	dashboardWinningCp: number;
+	dashboardShowInaccuracies: boolean;
 }
 
 function monthsAgo(n: number): string {
@@ -64,6 +70,11 @@ export function defaultSettings(): ChessJournalSettings {
 		boardTheme: "brown",
 		showClocks: true,
 		orientation: "mine",
+		dashboardPeriod: "3m",
+		dashboardPalette: "semantic",
+		dashboardMinGames: 5,
+		dashboardWinningCp: 200,
+		dashboardShowInaccuracies: false,
 	};
 }
 
@@ -216,5 +227,28 @@ export class ChessJournalSettingTab extends PluginSettingTab {
 			.setName("Orientation")
 			.addDropdown((d) => d.addOptions({ mine: "From my colour", white: "White at bottom", black: "Black at bottom" })
 				.setValue(s.orientation).onChange(async (v) => { s.orientation = v as Orientation; await save(); }));
+
+		new Setting(containerEl).setName("Dashboard").setHeading();
+		new Setting(containerEl)
+			.setName("Default period")
+			.addDropdown((d) => d.addOptions({ "30d": "30 days", "3m": "3 months", "12m": "12 months", all: "All" })
+				.setValue(s.dashboardPeriod).onChange(async (v) => { s.dashboardPeriod = v as ChessJournalSettings["dashboardPeriod"]; await save(); }));
+		new Setting(containerEl)
+			.setName("Chart colours")
+			.setDesc("Semantic: neutral series, green for better and red for worse. Vault accent and Soft follow your theme's accent colour.")
+			.addDropdown((d) => d.addOptions({ semantic: "Semantic", accent: "Vault accent", soft: "Soft" })
+				.setValue(s.dashboardPalette).onChange(async (v) => { s.dashboardPalette = v as ChessJournalSettings["dashboardPalette"]; await save(); }));
+		new Setting(containerEl)
+			.setName("Minimum games before showing a percentage")
+			.addSlider((sl) => sl.setLimits(1, 20, 1).setValue(s.dashboardMinGames).setDynamicTooltip()
+				.onChange(async (v) => { s.dashboardMinGames = v; await save(); }));
+		new Setting(containerEl)
+			.setName("Winning / losing threshold (centipawns)")
+			.setDesc("A game counts as winning (losing) when your evaluation is at least this much up (down) after two of your moves in a row. Changing it recomputes the summaries; the engine does not run again.")
+			.addDropdown((d) => d.addOptions({ "150": "150", "200": "200", "300": "300", "400": "400" })
+				.setValue(String(s.dashboardWinningCp)).onChange(async (v) => { s.dashboardWinningCp = Number(v); await save(); this.plugin.rebuildSummaries(); }));
+		new Setting(containerEl)
+			.setName("Show inaccuracies in the phase chart")
+			.addToggle((t) => t.setValue(s.dashboardShowInaccuracies).onChange(async (v) => { s.dashboardShowInaccuracies = v; await save(); }));
 	}
 }

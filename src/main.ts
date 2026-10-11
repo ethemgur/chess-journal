@@ -1,4 +1,4 @@
-import { App, Menu, Modal, Notice, Platform, Plugin, Setting, normalizePath } from "obsidian";
+import { App, Menu, Modal, Notice, Platform, Plugin, Setting, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
 import { ChessJournalSettingTab, ChessJournalSettings, defaultSettings, engineLabel } from "./settings";
 import type { AnalysisStatus, Colour, GameRecord } from "./types";
 import { NoteWriter, firstGameBlock } from "./notes/noteWriter";
@@ -11,6 +11,16 @@ import { ENGINE_TOTAL_MB, EngineFiles } from "./engine/engineFiles";
 import { EngineService } from "./engine/service";
 import { AnalysisCache } from "./engine/cache";
 import { AnalysisQueue, QueueState } from "./engine/queue";
+import type { GameAnalysis } from "./engine/types";
+import { DashboardView, VIEW_TYPE_DASHBOARD } from "./dashboard/DashboardView";
+import { GameIndex } from "./dashboard/gameIndex";
+import { SummaryStore, computeSummary } from "./dashboard/summary";
+import { RatingsCache } from "./dashboard/ratings";
+import { Filters, GameRow, defaultFilters } from "./dashboard/compute";
+import { chesscomUserAgent } from "./sources/chesscom";
+
+/** Workspace event that asks a game's board to jump to a main-line ply: (gameKey, ply). */
+export const GOTO_PLY_EVENT = "chess-review:goto-ply";
 
 interface PluginData {
 	settings: ChessJournalSettings;
@@ -19,6 +29,8 @@ interface PluginData {
 	queue: QueueState;
 	/** Hash of the PGN last written by the board editor, per game key. */
 	editedPgn: Record<string, string>;
+	/** Dashboard filters, kept between sessions. */
+	dashboardFilters?: Filters;
 }
 
 export default class ChessJournalPlugin extends Plugin {
@@ -34,6 +46,12 @@ export default class ChessJournalPlugin extends Plugin {
 	private syncing = false;
 	private syncCancelled = false;
 	private activeBoard: BoardView | null = null;
+	summaries!: SummaryStore;
+	gameIndex!: GameIndex;
+	private ratings!: RatingsCache;
+	private gotoListeners = new Map<string, Set<(ply: number) => void>>();
+	private pendingGoto?: { key: string; ply: number };
+	private summaryRebuild?: Promise<void>;
 
 	settings!: ChessJournalSettings;
 
@@ -88,7 +106,41 @@ export default class ChessJournalPlugin extends Plugin {
 				this.renderStatus();
 			},
 			notify: (t) => new Notice(`Chess Journal: ${t}`),
+			onAnalysed: (key, pgn, analysis) => this.storeSummary(key, pgn, analysis),
 		});
+
+		// Dashboard: per-game summaries, the game index and live ratings.
+		this.summaries = new SummaryStore(
+			{ exists: (p) => adapter.exists(p), read: (p) => adapter.read(p), write: (p, d) => adapter.write(p, d) },
+			`${dir}/summaries.json`,
+		);
+		await this.summaries.load();
+		this.register(() => void this.summaries.flush());
+		this.gameIndex = new GameIndex(this.app, () => this.settings.gamesFolder, this.summaries);
+		this.register(() => this.gameIndex.dispose());
+		this.ratings = new RatingsCache(obsidianHttp);
+		this.registerView(VIEW_TYPE_DASHBOARD, (leaf: WorkspaceLeaf) =>
+			new DashboardView(leaf, {
+				app: this.app,
+				index: this.gameIndex,
+				ratings: this.ratings,
+				settings: () => this.settings,
+				engineLabel: () => engineLabel(this.settings),
+				chesscomUserAgent: () => chesscomUserAgent(this.manifest.version, this.settings.chesscomUsername, this.settings.contactEmail),
+				filters: () => this.data.dashboardFilters ?? defaultFilters(this.settings.dashboardPeriod),
+				saveFilters: (f) => {
+					this.data.dashboardFilters = f;
+					void this.savePluginData();
+				},
+				openGame: (row, ply) => void this.openGameAt(row, ply),
+				markReviewed: (row) => this.markReviewed(row),
+				onSummariesChange: (fn) => this.summaries.onChange(fn),
+			}),
+		);
+		this.registerEvent(
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(this.app.workspace as any).on(GOTO_PLY_EVENT, (key: string, ply: number) => this.dispatchGoto(key, ply)),
+		);
 
 		this.addSettingTab(new ChessJournalSettingTab(this.app, this));
 		registerChessGameBlock(this);
@@ -103,6 +155,7 @@ export default class ChessJournalPlugin extends Plugin {
 			const menu = new Menu();
 			menu.addItem((i) => i.setTitle("Sync all games").setIcon("refresh-cw").onClick(() => void this.runSync("all")));
 			menu.addItem((i) => i.setTitle("Import PGN file").setIcon("file-input").onClick(() => this.importPgn()));
+			menu.addItem((i) => i.setTitle("Open performance dashboard").setIcon("bar-chart-2").onClick(() => void this.openDashboard()));
 			menu.addItem((i) =>
 				i.setTitle(this.queue.paused ? "Resume analysis" : "Pause analysis").setIcon("cpu").onClick(() => void this.togglePause()),
 			);
@@ -115,6 +168,7 @@ export default class ChessJournalPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => {
 			this.notes.buildIndex();
 			this.queue.kick();
+			void this.ensureSummaries();
 			if (this.settings.syncOnStartup) {
 				const t = window.setTimeout(() => void this.runSync("all"), 30_000);
 				this.register(() => window.clearTimeout(t));
@@ -142,6 +196,7 @@ export default class ChessJournalPlugin extends Plugin {
 			deletedKeys: raw.deletedKeys ?? [],
 			queue: Object.assign({ queue: [], paused: false }, raw.queue ?? {}),
 			editedPgn: raw.editedPgn ?? {},
+			dashboardFilters: raw.dashboardFilters,
 		};
 		this.settings = this.data.settings;
 	}
@@ -152,6 +207,116 @@ export default class ChessJournalPlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		await this.savePluginData();
+	}
+
+	/* ------------------------------------------------------------ */
+	/* Dashboard                                                    */
+	/* ------------------------------------------------------------ */
+
+	async openDashboard(): Promise<void> {
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DASHBOARD)[0];
+		const leaf = existing ?? this.app.workspace.getLeaf("tab");
+		if (!existing) await leaf.setViewState({ type: VIEW_TYPE_DASHBOARD, active: true });
+		this.app.workspace.revealLeaf(leaf);
+	}
+
+	/** Derive and store a game's summary from its PGN and analysis (no engine run). */
+	private async storeSummary(key: string, pgn: string, analysis: GameAnalysis): Promise<void> {
+		const f = this.notes.fileFor(key);
+		const fm = f ? this.app.metadataCache.getFileCache(f)?.frontmatter ?? {} : {};
+		const myResult = fm["my-result"];
+		if (myResult !== "win" && myResult !== "loss" && myResult !== "draw") return;
+		try {
+			this.summaries.set(key, computeSummary({
+				pgn,
+				analysis,
+				myColour: fm["my-colour"] === "black" ? "black" : "white",
+				myResult,
+				termination: typeof fm.termination === "string" ? fm.termination : undefined,
+				daily: fm["time-class"] === "daily",
+				winningCp: this.settings.dashboardWinningCp,
+			}));
+		} catch (e) {
+			console.error("Chess Journal: summary failed for", key, e);
+		}
+	}
+
+	/** Build missing or outdated summaries from the analysis cache, in the background. */
+	ensureSummaries(): Promise<void> {
+		if (this.summaryRebuild) return this.summaryRebuild;
+		this.summaryRebuild = (async () => {
+			const cp = this.settings.dashboardWinningCp;
+			if (this.summaries.needsFullRebuild(cp)) this.summaries.resetFor(cp);
+			this.notes.buildIndex();
+			let n = 0;
+			for (const [key] of this.notes.index) {
+				if (this.summaries.isCurrent(key, cp)) continue;
+				const analysis = await this.cache.get(key);
+				const game = analysis && (await this.readGame(key));
+				if (analysis && game) await this.storeSummary(key, game.pgn, analysis);
+				if (++n % 25 === 0) await new Promise((r) => window.setTimeout(r, 0));
+			}
+		})().finally(() => {
+			this.summaryRebuild = undefined;
+			this.gameIndex.invalidate(true);
+		});
+		return this.summaryRebuild;
+	}
+
+	/** The winning threshold changed: recompute every summary from the cache. */
+	rebuildSummaries(): void {
+		void (async () => {
+			await this.summaryRebuild;
+			this.summaries.resetFor(this.settings.dashboardWinningCp);
+			await this.ensureSummaries();
+		})();
+	}
+
+	/** Open a game's note and, if given, jump its board to a main-line ply. */
+	async openGameAt(row: GameRow, ply?: number): Promise<void> {
+		const file = this.app.vault.getAbstractFileByPath(row.path);
+		if (!(file instanceof TFile)) {
+			new Notice("Chess Journal: the game note was not found.");
+			return;
+		}
+		if (ply !== undefined) this.pendingGoto = { key: row.key, ply };
+		const leaf = this.app.workspace.getLeaf(false);
+		await leaf.openFile(file);
+		if (ply === undefined) return;
+		// Boards render when scrolled into view: bring the game block on screen.
+		window.setTimeout(() => {
+			const block = leaf.view.containerEl.querySelector(".cr-block");
+			block?.scrollIntoView({ block: "center" });
+			this.app.workspace.trigger(GOTO_PLY_EVENT, row.key, ply);
+		}, 150);
+	}
+
+	private dispatchGoto(key: string, ply: number): void {
+		const listeners = this.gotoListeners.get(key);
+		if (!listeners?.size) return;
+		this.pendingGoto = undefined;
+		for (const fn of listeners) fn(ply);
+	}
+
+	/** Boards subscribe by game key; a pending jump (from the dashboard) is delivered on subscribe. */
+	subscribeGoto(key: string, fn: (ply: number) => void): () => void {
+		if (!this.gotoListeners.has(key)) this.gotoListeners.set(key, new Set());
+		this.gotoListeners.get(key)?.add(fn);
+		const pending = this.pendingGoto;
+		if (pending && pending.key === key) {
+			this.pendingGoto = undefined;
+			window.setTimeout(() => fn(pending.ply), 0);
+		}
+		return () => this.gotoListeners.get(key)?.delete(fn);
+	}
+
+	/** The dashboard's only write: reviewed: true in that note's frontmatter. */
+	async markReviewed(row: GameRow): Promise<void> {
+		const file = this.app.vault.getAbstractFileByPath(row.path);
+		if (!(file instanceof TFile)) return;
+		await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+			fm.reviewed = true;
+		});
 	}
 
 	async recordEditedPgn(key: string, hash: string): Promise<void> {
@@ -244,6 +409,7 @@ export default class ChessJournalPlugin extends Plugin {
 			},
 		});
 		this.addCommand({ id: "download-engine", name: "Download engine", callback: () => this.confirmEngineDownload(true) });
+		this.addCommand({ id: "open-dashboard", name: "Open performance dashboard", callback: () => void this.openDashboard() });
 	}
 
 	private importPgn(): void {
@@ -413,6 +579,8 @@ export default class ChessJournalPlugin extends Plugin {
 				const key = this.notes.keyForPath(file.path);
 				if (!key) return;
 				this.notes.index.delete(key);
+				this.summaries.remove(key);
+				this.gameIndex.invalidate();
 				// A game the user deleted is not re-created on the next sync.
 				if (!this.data.deletedKeys.includes(key)) this.data.deletedKeys.push(key);
 				this.data.queue.queue = this.data.queue.queue.filter((k) => k !== key || k === this.queue.currentKey);
@@ -427,7 +595,10 @@ export default class ChessJournalPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.metadataCache.on("changed", (file) => {
-				if (file.path.startsWith(normalizePath(this.settings.gamesFolder) + "/")) this.notes.indexFile(file);
+				if (file.path.startsWith(normalizePath(this.settings.gamesFolder) + "/")) {
+					this.notes.indexFile(file);
+					this.gameIndex.invalidate();
+				}
 			}),
 		);
 	}
