@@ -32,7 +32,12 @@ class ChessGameBlock extends MarkdownRenderChild {
 
 	onload(): void {
 		this.containerEl.addClass("cr-block");
-		const placeholder = this.containerEl.createDiv({ cls: "cr-placeholder", text: "Chess game" });
+		// A block that was already shown (e.g. re-rendered after a save) renders at once, without a flash.
+		if (blockStates.get(this.stateKey())?.rendered) {
+			this.renderBoard();
+			return;
+		}
+		const placeholder = this.containerEl.createDiv({ cls: "cr-placeholder" });
 		// Boards render lazily when scrolled into view.
 		if (typeof IntersectionObserver === "undefined") {
 			placeholder.remove();

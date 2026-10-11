@@ -1,18 +1,18 @@
 /**
- * Interactive board for one chess-game block: chessground board, nested move
- * list, eval bar and graph, engine panel, and editing with write-back.
+ * Interactive board for one chess-game block: chessground board, move list,
+ * eval gauge and graph, compact engine panel, and editing with write-back.
  *
  * All text from the PGN (tags, comments) is untrusted: it is only ever set
  * with createEl/setText, never as HTML.
  */
-import { App, Menu, Modal, Notice, Platform, Setting } from "obsidian";
+import { App, Menu, Modal, Notice, Setting, setIcon } from "obsidian";
 import { Chessground } from "chessground";
 import type { Api } from "chessground/api";
 import type { DrawShape } from "chessground/draw";
 import type { Key } from "chessground/types";
 import { chessgroundDests } from "chessops/compat";
 import { makeSanVariation } from "chessops/san";
-import { CommentShape, CommentShapeColor, Node, PgnNodeData } from "chessops/pgn";
+import { ChildNode, CommentShape, CommentShapeColor, Node, PgnNodeData } from "chessops/pgn";
 import { makeSquare, parseSquare } from "chessops/util";
 import type { Colour } from "../types";
 import type { ChessReviewSettings } from "../settings";
@@ -21,7 +21,6 @@ import {
 	POSITION_NAGS,
 	Path,
 	PgnGame,
-	addLine,
 	addMove,
 	commentOf,
 	deleteFrom,
@@ -39,7 +38,6 @@ import {
 	serialise,
 	setNag,
 	startPly,
-	timeSpent,
 	updateComment,
 } from "../pgn/tree";
 import { Mark, classifyGame, scoreToCp, winningChances } from "../engine/classify";
@@ -47,12 +45,12 @@ import type { EngineLine, GameAnalysis, Score } from "../engine/types";
 import type { EngineService, InteractiveHandle } from "../engine/service";
 import { EngineNotInstalledError } from "../engine/service";
 
-/** State that survives the block being re-rendered after a write-back. */
 export interface Snapshot {
 	pgn: string;
 	path: Path;
 }
 
+/** State that survives the block being re-rendered after a write-back. */
 export interface BlockState {
 	path: Path;
 	flipped: boolean;
@@ -60,9 +58,18 @@ export interface BlockState {
 	redo: Snapshot[];
 	engineOn: boolean;
 	hadFocus: boolean;
+	rendered: boolean;
 }
 
-export const newBlockState = (): BlockState => ({ path: [], flipped: false, undo: [], redo: [], engineOn: false, hadFocus: false });
+export const newBlockState = (): BlockState => ({
+	path: [],
+	flipped: false,
+	undo: [],
+	redo: [],
+	engineOn: false,
+	hadFocus: false,
+	rendered: false,
+});
 
 export interface BoardHost {
 	app: App;
@@ -80,13 +87,10 @@ export interface BoardHost {
 
 const MARK_LABEL: Record<Mark, string> = { inaccuracy: "Inaccuracy", mistake: "Mistake", blunder: "Blunder" };
 const BRUSH: Record<CommentShapeColor, string> = { green: "green", red: "red", blue: "blue", yellow: "yellow" };
-
-const fmtSeconds = (s: number) => {
-	if (s < 60) return `${Math.round(s)}s`;
-	const m = Math.floor(s / 60);
-	const r = Math.round(s % 60);
-	return `${m}:${String(r).padStart(2, "0")}`;
-};
+/** Glyph colour class per move NAG, as on Lichess. */
+const NAG_CLASS: Record<number, string> = { 1: "good", 2: "mistake", 3: "brilliant", 4: "blunder", 5: "interesting", 6: "dubious" };
+/** A drawn-shape change counts as the user's only shortly after a right-button press on the board. */
+const DRAW_WINDOW_MS = 5000;
 
 const fmtClock = (s: number) => {
 	const h = Math.floor(s / 3600);
@@ -101,6 +105,8 @@ export function formatScore(s: Score): string {
 	return `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
 }
 
+type MoveNode = ChildNode<PgnNodeData>;
+
 export class BoardView {
 	private game: PgnGame;
 	private cg?: Api;
@@ -110,14 +116,13 @@ export class BoardView {
 	private pendingSave?: string;
 	private analysis?: GameAnalysis;
 	private marks = new Map<number, Mark>();
-	private spent = new Map<number, number>();
-	private longThink = Infinity;
 	private interactive?: InteractiveHandle;
 	private interactiveTimer?: number;
 	private liveLines: EngineLine[] = [];
 	private liveFen?: string;
 	private cleanups: Array<() => void> = [];
 	private longPressTimer?: number;
+	private lastRightDown = 0;
 
 	constructor(private container: HTMLElement, pgn: string, private host: BoardHost) {
 		this.game = parseGame(pgn);
@@ -141,28 +146,28 @@ export class BoardView {
 	render(): void {
 		const s = this.settings;
 		this.root.empty();
-		this.root.addClass(`cr-theme-${s.boardTheme}`, `cr-pieces-${s.pieceSet}`);
-		this.renderHeader();
+		this.root.addClass(`cr-theme-${s.boardTheme}`);
 		const main = this.root.createDiv({ cls: "cr-main" });
 		const left = main.createDiv({ cls: "cr-left" });
 		this.els.topPlayer = left.createDiv({ cls: "cr-player cr-player-top" });
 		const boardRow = left.createDiv({ cls: "cr-board-row" });
-		this.els.evalBar = boardRow.createDiv({ cls: "cr-evalbar" });
-		this.els.evalFill = this.els.evalBar.createDiv({ cls: "cr-evalbar-fill" });
-		this.els.evalText = this.els.evalBar.createDiv({ cls: "cr-evalbar-text" });
+		this.els.evalBar = boardRow.createDiv({ cls: "cr-gauge" });
+		this.els.evalFill = this.els.evalBar.createDiv({ cls: "cr-gauge-fill" });
+		this.els.evalBar.createDiv({ cls: "cr-gauge-mid" });
 		const cgWrap = boardRow.createDiv({ cls: "cr-cg-wrap" });
 		this.els.cg = cgWrap.createDiv({ cls: "cr-cg" });
 		this.els.promo = cgWrap.createDiv({ cls: "cr-promo" });
 		this.els.bottomPlayer = left.createDiv({ cls: "cr-player cr-player-bottom" });
 		this.renderControls(left.createDiv({ cls: "cr-controls" }));
 		this.els.graph = left.createDiv({ cls: "cr-graph" });
-		this.els.engine = left.createDiv({ cls: "cr-engine" });
-		this.els.moves = main.createDiv({ cls: "cr-moves" });
+		const side = main.createDiv({ cls: "cr-side" });
+		this.els.engine = side.createDiv({ cls: "cr-ceval" });
+		this.els.moves = side.createDiv({ cls: "cr-moves" });
 
 		this.cg = Chessground(this.els.cg, {
 			orientation: this.orientation(),
 			coordinates: true,
-			animation: { enabled: true, duration: 150 },
+			animation: { enabled: true, duration: 120 },
 			highlight: { lastMove: true, check: true },
 			premovable: { enabled: false },
 			draggable: { showGhost: true },
@@ -180,10 +185,10 @@ export class BoardView {
 		});
 
 		this.bindEvents();
-		this.refreshTiming();
 		void this.reloadAnalysis();
 		this.cleanups.push(this.host.onAnalysisChange(() => void this.reloadAnalysis()));
 		this.update();
+		this.state.rendered = true;
 		if (this.state.hadFocus) {
 			this.state.hadFocus = false;
 			this.root.focus({ preventScroll: true });
@@ -197,57 +202,65 @@ export class BoardView {
 		return o;
 	}
 
-	private renderHeader(): void {
-		const h = this.game.headers;
-		const head = this.root.createDiv({ cls: "cr-header" });
-		const bits = [
-			h.get("Result"),
-			h.get("TimeControl") && h.get("TimeControl") !== "-" ? h.get("TimeControl") : undefined,
-			(h.get("UTCDate") ?? h.get("Date"))?.replace(/\./g, "-"),
-			h.get("Event") && h.get("Event") !== "?" ? h.get("Event") : undefined,
-		].filter((x): x is string => !!x && !x.includes("?"));
-		head.createSpan({ cls: "cr-header-players", text: `${this.playerLabel("white")} – ${this.playerLabel("black")}` });
-		if (bits.length) head.createSpan({ cls: "cr-header-meta", text: bits.join(" · ") });
-	}
-
-	private playerLabel(c: Colour): string {
+	private playerLabel(c: Colour): { name: string; elo?: string } {
 		const h = this.game.headers;
 		const name = h.get(c === "white" ? "White" : "Black") ?? "?";
 		const elo = h.get(c === "white" ? "WhiteElo" : "BlackElo");
-		return elo && elo !== "?" ? `${name} (${elo})` : name;
+		return { name, elo: elo && elo !== "?" ? elo : undefined };
 	}
 
+	/** First, previous, next, last, and a menu for everything else. */
 	private renderControls(el: HTMLElement): void {
-		const btn = (label: string, title: string, fn: () => void) => {
-			const b = el.createEl("button", { cls: "cr-btn", text: label, attr: { "aria-label": title, title } });
+		const btn = (icon: string, title: string, fn: (e: MouseEvent) => void, cls = "") => {
+			const b = el.createEl("button", { cls: `cr-ctrl clickable-icon ${cls}`, attr: { "aria-label": title } });
+			setIcon(b, icon);
+			// Keep keyboard focus on the board, not the button.
+			b.addEventListener("mousedown", (e) => e.preventDefault());
 			b.addEventListener("click", (e) => {
 				e.preventDefault();
-				fn();
+				fn(e);
 			});
 			return b;
 		};
-		btn("⏮", "First move (Home)", () => this.goto([]));
-		btn("◀", "Previous move (←)", () => this.prev());
-		btn("▶", "Next move (→)", () => this.next());
-		btn("⏭", "Last move (End)", () => this.end());
-		if (Platform.isMobile) {
-			btn("▲", "Previous variation (↑)", () => this.sibling(-1));
-			btn("▼", "Next variation (↓)", () => this.sibling(1));
-		}
-		btn("⇅", "Flip board (F)", () => this.flip());
-		btn("↶", "Undo (Ctrl/Cmd+Z)", () => this.undo());
-		btn("↷", "Redo (Ctrl/Cmd+Shift+Z)", () => this.redo());
-		this.els.engineBtn = btn("Engine", "Analyse this position", () => this.toggleEngine());
+		btn("chevrons-left", "First move", () => this.goto([]));
+		btn("chevron-left", "Previous move", () => this.prev());
+		btn("chevron-right", "Next move", () => this.next());
+		btn("chevrons-right", "Last move", () => this.end());
+		btn("more-horizontal", "More", (e) => this.openBoardMenu(e), "cr-ctrl-menu");
+	}
+
+	private openBoardMenu(e: MouseEvent): void {
+		const menu = new Menu();
+		menu.addItem((i) => i.setTitle("Flip board").setIcon("arrow-up-down").onClick(() => this.flip()));
+		menu.addItem((i) => i.setTitle("Undo").setIcon("undo-2").setDisabled(!this.state.undo.length).onClick(() => this.undo()));
+		menu.addItem((i) => i.setTitle("Redo").setIcon("redo-2").setDisabled(!this.state.redo.length).onClick(() => this.redo()));
+		menu.addSeparator();
+		menu.addItem((i) => i.setTitle("Copy PGN").setIcon("copy").onClick(async () => {
+			await navigator.clipboard.writeText(this.getPgn());
+			new Notice("PGN copied.");
+		}));
+		menu.showAtMouseEvent(e);
 	}
 
 	private bindEvents(): void {
-		const on = <K extends keyof HTMLElementEventMap>(el: HTMLElement, ev: K, fn: (e: HTMLElementEventMap[K]) => void) => {
-			el.addEventListener(ev, fn);
-			this.cleanups.push(() => el.removeEventListener(ev, fn));
+		const on = <K extends keyof HTMLElementEventMap>(el: HTMLElement, ev: K, fn: (e: HTMLElementEventMap[K]) => void, opts?: AddEventListenerOptions) => {
+			el.addEventListener(ev, fn, opts);
+			this.cleanups.push(() => el.removeEventListener(ev, fn, opts));
 		};
 		on(this.root, "keydown", (e) => this.onKey(e));
 		on(this.root, "focusin", () => this.host.setActive(this));
-		on(this.root, "pointerdown", () => this.host.setActive(this));
+		// In Live Preview, a click that reaches the editor puts the cursor inside the
+		// block and the board is re-rendered as source. Keep pointer events here.
+		for (const ev of ["mousedown", "pointerdown", "touchstart", "click"] as const) {
+			on(this.root, ev, (e) => {
+				if (ev === "pointerdown" || ev === "mousedown") this.host.setActive(this);
+				e.stopPropagation();
+			});
+		}
+		// Shapes are only the user's when drawn with the right button.
+		on(this.els.cg, "pointerdown", (e) => {
+			if (e.button === 2) this.lastRightDown = Date.now();
+		}, { capture: true });
 		const ro = new ResizeObserver(() => {
 			this.root.toggleClass("cr-narrow", this.root.clientWidth < 560);
 			this.cg?.redrawAll();
@@ -299,6 +312,7 @@ export class BoardView {
 		this.state.flipped = !this.state.flipped;
 		this.cg?.set({ orientation: this.orientation() });
 		this.updatePlayers();
+		this.updateEvalBar();
 	}
 
 	private onKey(e: KeyboardEvent): void {
@@ -330,7 +344,8 @@ export class BoardView {
 	private update(): void {
 		const info = infoAt(this.game, this.state.path);
 		const pos = info.pos;
-		const lastMove = info.lastMove && "from" in info.lastMove ? [makeSquare(info.lastMove.from), makeSquare(info.lastMove.to)] as Key[] : undefined;
+		// Highlight castling as king to g1/c1, as Lichess does.
+		const lastMove = info.lastUci ? ([info.lastUci.slice(0, 2), info.lastUci.slice(2, 4)] as Key[]) : undefined;
 		const comment = commentOf(info.node, this.game);
 		this.cg?.set({
 			fen: info.fen,
@@ -352,12 +367,15 @@ export class BoardView {
 		const bottom = this.orientation();
 		const top: Colour = bottom === "white" ? "black" : "white";
 		const clocks = this.settings.showClocks ? this.clocksAt(this.state.path) : {};
+		const turn = infoAt(this.game, this.state.path).pos.turn;
 		for (const [el, c] of [[this.els.topPlayer, top], [this.els.bottomPlayer, bottom]] as Array<[HTMLElement, Colour]>) {
 			el.empty();
-			el.createSpan({ cls: `cr-player-dot cr-${c}` });
-			el.createSpan({ cls: "cr-player-name", text: this.playerLabel(c) });
+			const p = this.playerLabel(c);
+			el.createSpan({ cls: `cr-player-colour cr-${c}` });
+			el.createSpan({ cls: "cr-player-name", text: p.name });
+			if (p.elo) el.createSpan({ cls: "cr-player-elo", text: p.elo });
 			const clk = clocks[c];
-			if (clk !== undefined) el.createSpan({ cls: "cr-player-clock", text: fmtClock(clk) });
+			if (clk !== undefined) el.createSpan({ cls: "cr-clock" + (turn === c ? " is-running" : ""), text: fmtClock(clk) });
 		}
 	}
 
@@ -378,49 +396,86 @@ export class BoardView {
 		return out;
 	}
 
-	private refreshTiming(): void {
-		this.spent = timeSpent(this.game);
-		const tc = parseTimeControl(this.game.headers.get("TimeControl"));
-		this.longThink = tc && tc.base > 0 ? tc.base * 0.1 : Infinity;
-	}
-
 	/* ------------------------------------------------------------ */
 	/* Move list                                                    */
 	/* ------------------------------------------------------------ */
 
+	/**
+	 * Main line as rows "n. white black"; comments and side lines break the
+	 * row and are shown inline below it, Lichess-style.
+	 */
 	private renderMoves(): void {
 		const el = this.els.moves;
 		const scroll = el.scrollTop;
 		el.empty();
 		const rootComment = commentOf(this.game.moves, this.game).text;
-		if (rootComment) el.createDiv({ cls: "cr-comment cr-root-comment", text: rootComment });
-		const line = el.createDiv({ cls: "cr-line cr-mainline" });
-		this.renderLine(line, this.game.moves, [], startPly(initialPosition(this.game)), true, true);
+		if (rootComment) el.createDiv({ cls: "cr-interrupt" }).createSpan({ cls: "cr-comment", text: rootComment });
+
+		let node: Node<PgnNodeData> = this.game.moves;
+		let path: Path = [];
+		let ply = startPly(initialPosition(this.game));
+		// Starting with Black to move: open the first row with an empty White cell.
+		let openRow = ply % 2 === 1;
+		if (openRow) {
+			el.createDiv({ cls: "cr-index", text: `${Math.floor(ply / 2) + 1}` });
+			el.createDiv({ cls: "cr-move cr-empty", text: "…" });
+		}
+		while (node.children.length) {
+			const main = node.children[0];
+			const mainPath = [...path, 0];
+			const white = ply % 2 === 0;
+			if (white) {
+				el.createDiv({ cls: "cr-index", text: `${Math.floor(ply / 2) + 1}` });
+				openRow = true;
+			} else if (!openRow) {
+				el.createDiv({ cls: "cr-index", text: `${Math.floor(ply / 2) + 1}` });
+				el.createDiv({ cls: "cr-move cr-empty", text: "…" });
+			}
+			this.moveEl(el, main, mainPath, true, "div");
+			if (!white) openRow = false;
+			const text = commentOf(main, this.game).text;
+			const alts = node.children.slice(1);
+			if (text || alts.length) {
+				if (white) el.createDiv({ cls: "cr-move cr-empty", text: "…" });
+				openRow = false;
+				const box = el.createDiv({ cls: "cr-interrupt" });
+				if (text) box.createSpan({ cls: "cr-comment", text });
+				alts.forEach((v, j) => {
+					const line = box.createDiv({ cls: "cr-line" });
+					this.renderSideline(line, v, [...path, j + 1], ply, true);
+				});
+			}
+			node = main;
+			path = mainPath;
+			ply++;
+		}
 		const result = this.game.headers.get("Result");
 		if (result && result !== "*") el.createDiv({ cls: "cr-result", text: result });
+
 		el.scrollTop = scroll;
 		const active = el.querySelector(".cr-move.is-active") as HTMLElement | null;
 		if (active) {
 			const top = active.offsetTop - el.offsetTop;
-			if (top < el.scrollTop || top > el.scrollTop + el.clientHeight - 24) el.scrollTop = top - el.clientHeight / 2;
+			if (top < el.scrollTop || top > el.scrollTop + el.clientHeight - 28) el.scrollTop = top - el.clientHeight / 2;
 		}
 	}
 
-	private renderLine(container: HTMLElement, parent: Node<PgnNodeData>, path: Path, ply: number, isMain: boolean, force: boolean): void {
+	/** A side line, inline ("6. Bg5 Qb6 7. O-O"); its own branches nest below it. */
+	private renderSideline(container: HTMLElement, first: MoveNode, firstPath: Path, ply: number, force: boolean): void {
+		const f = this.inlineMove(container, first, firstPath, ply, force);
+		this.renderInline(container, first, firstPath, ply + 1, f);
+	}
+
+	private renderInline(container: HTMLElement, parent: Node<PgnNodeData>, path: Path, ply: number, force: boolean): void {
 		let node = parent;
 		let p = path;
 		while (node.children.length) {
 			const main = node.children[0];
 			const mainPath = [...p, 0];
-			force = this.renderMove(container, main, mainPath, ply, force, isMain);
+			force = this.inlineMove(container, main, mainPath, ply, force);
 			if (node.children.length > 1) {
-				const vars = container.createDiv({ cls: "cr-variations" });
-				node.children.slice(1).forEach((v, j) => {
-					const vEl = vars.createDiv({ cls: "cr-line cr-variation" });
-					const vPath = [...p, j + 1];
-					const f = this.renderMove(vEl, v, vPath, ply, true, false);
-					this.renderLine(vEl, v, vPath, ply + 1, false, f);
-				});
+				const nested = container.createDiv({ cls: "cr-nested" });
+				node.children.slice(1).forEach((v, j) => this.renderSideline(nested.createDiv({ cls: "cr-line" }), v, [...p, j + 1], ply, true));
 				force = true;
 			}
 			node = main;
@@ -429,27 +484,34 @@ export class BoardView {
 		}
 	}
 
-	/** Render one move; returns whether the next move needs its number re-indicated. */
-	private renderMove(container: HTMLElement, node: Node<PgnNodeData> & { data: PgnNodeData }, path: Path, ply: number, force: boolean, isMain: boolean): boolean {
+	/** One move in a side line; returns whether the next move needs its number repeated. */
+	private inlineMove(container: HTMLElement, node: MoveNode, path: Path, ply: number, force: boolean): boolean {
 		for (const c of node.data.startingComments ?? []) {
 			container.createSpan({ cls: "cr-comment", text: c });
 			force = true;
 		}
 		const num = Math.floor(ply / 2) + 1;
-		const white = ply % 2 === 0;
-		if (white || force) container.createSpan({ cls: "cr-num", text: white ? `${num}.` : `${num}…` });
+		if (ply % 2 === 0) container.createSpan({ cls: "cr-num", text: `${num}.` });
+		else if (force) container.createSpan({ cls: "cr-num", text: `${num}…` });
+		this.moveEl(container, node, path, false, "span");
+		const text = commentOf(node, this.game).text;
+		if (text) {
+			container.createSpan({ cls: "cr-comment", text });
+			return true;
+		}
+		return false;
+	}
+
+	private moveEl(container: HTMLElement, node: MoveNode, path: Path, isMain: boolean, tag: "div" | "span"): HTMLElement {
 		const isActive = pathKey(path) === pathKey(this.state.path);
-		const m = container.createSpan({ cls: "cr-move" + (isActive ? " is-active" : "") });
+		const m: HTMLElement = container.createEl(tag, { cls: "cr-move" + (isActive ? " is-active" : "") + (isMain ? "" : " is-side") });
 		m.createSpan({ cls: "cr-san", text: node.data.san });
-		for (const n of node.data.nags ?? []) m.createSpan({ cls: "cr-nag", text: nagGlyph(n) });
-		const mainIdx = isMain ? path.length : -1;
+		for (const n of node.data.nags ?? []) {
+			m.createSpan({ cls: `cr-nag cr-nag-${NAG_CLASS[n] ?? "other"}`, text: nagGlyph(n) });
+		}
 		if (isMain) {
-			const mark = this.marks.get(mainIdx);
-			if (mark) m.createSpan({ cls: `cr-badge cr-badge-${mark}`, attr: { title: MARK_LABEL[mark], "aria-label": MARK_LABEL[mark] } });
-			const sp = this.spent.get(mainIdx);
-			if (this.settings.showClocks && sp !== undefined) {
-				m.createSpan({ cls: "cr-spent" + (sp > this.longThink ? " is-long" : ""), text: fmtSeconds(sp), attr: { title: "Time spent" } });
-			}
+			const mark = this.marks.get(path.length);
+			if (mark) m.createSpan({ cls: `cr-mark cr-mark-${mark}`, attr: { "aria-label": MARK_LABEL[mark], title: MARK_LABEL[mark] } });
 		}
 		m.addEventListener("click", () => {
 			this.goto(path);
@@ -471,12 +533,7 @@ export class BoardView {
 		const cancel = () => window.clearTimeout(this.longPressTimer);
 		m.addEventListener("touchend", cancel);
 		m.addEventListener("touchmove", cancel);
-		const text = commentOf(node, this.game).text;
-		if (text) {
-			container.createSpan({ cls: "cr-comment", text });
-			return true;
-		}
-		return false;
+		return m;
 	}
 
 	/* ------------------------------------------------------------ */
@@ -485,21 +542,21 @@ export class BoardView {
 
 	private openMoveMenu(path: Path, at: { x: number; y: number }): void {
 		const menu = new Menu();
-		menu.addItem((i) => i.setTitle("Add / edit comment").setIcon("message-square").onClick(() => this.editComment(path)));
+		menu.addItem((i) => i.setTitle("Comment…").setIcon("message-square").onClick(() => this.editComment(path)));
 		menu.addSeparator();
 		for (const [nag, glyph] of Object.entries(MOVE_NAGS)) {
-			menu.addItem((i) => i.setTitle(`Move symbol ${glyph}`).onClick(() => this.edit(() => setNag(this.game, path, "move", Number(nag)))));
+			menu.addItem((i) => i.setTitle(`${glyph}  move`).onClick(() => this.edit(() => setNag(this.game, path, "move", Number(nag)))));
 		}
 		menu.addItem((i) => i.setTitle("Clear move symbol").onClick(() => this.edit(() => setNag(this.game, path, "move", 0))));
 		menu.addSeparator();
 		for (const [nag, glyph] of Object.entries(POSITION_NAGS)) {
-			menu.addItem((i) => i.setTitle(`Position symbol ${glyph}`).onClick(() => this.edit(() => setNag(this.game, path, "position", Number(nag)))));
+			menu.addItem((i) => i.setTitle(`${glyph}  position`).onClick(() => this.edit(() => setNag(this.game, path, "position", Number(nag)))));
 		}
 		menu.addItem((i) => i.setTitle("Clear position symbol").onClick(() => this.edit(() => setNag(this.game, path, "position", 0))));
 		menu.addSeparator();
 		menu.addItem((i) => i.setTitle("Promote variation").setIcon("arrow-up").onClick(() => this.edit(() => (this.state.path = promoteVariation(this.game, path)))));
 		menu.addItem((i) => i.setTitle("Make main line").setIcon("arrow-up-to-line").onClick(() => this.edit(() => (this.state.path = makeMainline(this.game, path)))));
-		menu.addItem((i) => i.setTitle("Delete from here").setIcon("trash").onClick(() => this.edit(() => (this.state.path = deleteFrom(this.game, path)))));
+		menu.addItem((i) => i.setTitle("Delete from here").setIcon("trash-2").onClick(() => this.edit(() => (this.state.path = deleteFrom(this.game, path)))));
 		menu.showAtPosition(at);
 	}
 
@@ -531,7 +588,7 @@ export class BoardView {
 			el.empty();
 		};
 		for (const [role, name] of [["q", "queen"], ["r", "rook"], ["b", "bishop"], ["n", "knight"]]) {
-			const b = el.createEl("button", { cls: "cr-promo-btn", attr: { "aria-label": name, title: name } });
+			const b = el.createEl("button", { cls: "cr-promo-btn", attr: { "aria-label": name } });
 			const piece = b.appendChild(document.createElement("piece"));
 			piece.className = `${color} ${name}`;
 			b.addEventListener("click", () => {
@@ -539,13 +596,15 @@ export class BoardView {
 				done(role);
 			});
 		}
-		const cancel = el.createEl("button", { cls: "cr-promo-cancel", text: "✕", attr: { "aria-label": "Cancel" } });
-		cancel.addEventListener("click", () => {
-			close();
-			this.update();
-		});
+		el.addEventListener("click", (e) => {
+			if (e.target === el) {
+				close();
+				this.update();
+			}
+		}, { once: true });
 	}
 
+	/** Play a move from the current position: go to it if it exists, else add it as a side line. */
 	private playUci(uci: string): void {
 		const before = this.snapshot();
 		const p = addMove(this.game, this.state.path, uci);
@@ -560,6 +619,12 @@ export class BoardView {
 	}
 
 	private onShapes(shapes: DrawShape[]): void {
+		// chessground also clears shapes when an empty square is tapped; that is not an edit.
+		if (Date.now() - this.lastRightDown > DRAW_WINDOW_MS) {
+			const node = nodeAt(this.game, this.state.path);
+			if (node) this.cg?.setShapes(commentOf(node, this.game).shapes.map(toDrawShape));
+			return;
+		}
 		const cs: CommentShape[] = [];
 		for (const s of shapes) {
 			const from = parseSquare(s.orig);
@@ -618,7 +683,6 @@ export class BoardView {
 	}
 
 	private afterChange(pgn: string, rerenderBoard: boolean): void {
-		this.refreshTiming();
 		if (rerenderBoard) this.update();
 		else this.renderMoves();
 		this.scheduleSave(pgn);
@@ -688,10 +752,9 @@ export class BoardView {
 		bar.toggleClass("is-empty", !s);
 		const w = s ? winningChances(scoreToCp(s)) : 0;
 		const whitePct = 50 + 50 * w;
-		const flipped = this.orientation() === "black";
 		this.els.evalFill.style.height = `${whitePct}%`;
-		this.els.evalFill.toggleClass("is-top", flipped);
-		this.els.evalText.setText(s ? formatScore(s) : "");
+		this.els.evalFill.toggleClass("is-top", this.orientation() === "black");
+		bar.setAttribute("aria-label", s ? formatScore(s) : "No evaluation");
 	}
 
 	private renderGraph(): void {
@@ -720,10 +783,7 @@ export class BoardView {
 		mid.setAttribute("y1", "50");
 		mid.setAttribute("y2", "50");
 		mid.classList.add("cr-graph-mid");
-		const line = document.createElementNS(ns, "polyline");
-		line.setAttribute("points", pts.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" "));
-		line.classList.add("cr-graph-line");
-		svg.append(area, mid, line);
+		svg.append(area, mid);
 		el.appendChild(svg);
 		const me = this.host.myColour;
 		const startWhite = mainline(this.game)[0].pos.turn === "white";
@@ -732,7 +792,7 @@ export class BoardView {
 			if (me && mover !== me) continue;
 			const pt = pts[idx];
 			if (!pt) continue;
-			const dot = el.createDiv({ cls: `cr-graph-dot cr-badge-${mark}`, attr: { title: `${MARK_LABEL[mark]} (move ${Math.ceil(idx / 2)})` } });
+			const dot = el.createDiv({ cls: `cr-graph-dot cr-mark-${mark}`, attr: { title: `${MARK_LABEL[mark]} (move ${Math.ceil(idx / 2)})` } });
 			dot.style.left = `${pt[0]}%`;
 			dot.style.top = `${pt[1]}%`;
 		}
@@ -749,8 +809,8 @@ export class BoardView {
 		};
 	}
 
-	private toggleEngine(): void {
-		this.state.engineOn = !this.state.engineOn;
+	private toggleEngine(on: boolean): void {
+		this.state.engineOn = on;
 		this.restartInteractive();
 		this.renderEngine();
 	}
@@ -788,51 +848,66 @@ export class BoardView {
 		}, 150);
 	}
 
+	/** Compact engine panel: a switch, the evaluation, and up to 3 one-line PVs. */
 	private renderEngine(): void {
 		const el = this.els.engine;
 		if (!el) return;
 		el.empty();
-		this.els.engineBtn?.toggleClass("is-on", this.state.engineOn);
 		const info = infoAt(this.game, this.state.path);
-		const rows: Array<{ score: Score; pv: string[]; depth: number; label: string }> = [];
+		const rows: Array<{ score: Score; pv: string[]; depth: number }> = [];
+		let label = "";
 		if (this.state.engineOn && this.liveFen === info.fen) {
-			for (const l of this.liveLines.slice(0, 3)) rows.push({ score: l.score, pv: l.pv, depth: l.depth, label: "" });
-		} else {
+			for (const l of this.liveLines.slice(0, 3)) rows.push({ score: l.score, pv: l.pv, depth: l.depth });
+			if (rows[0]) label = `depth ${rows[0].depth}`;
+		} else if (!this.state.engineOn) {
 			const c = this.cachedPly();
-			if (c && c.pv.length) rows.push({ score: c.score, pv: c.pv, depth: c.depth, label: c.source === "cloud" ? "cloud" : this.analysis?.engine ?? "" });
+			if (c && c.pv.length) {
+				rows.push({ score: c.score, pv: c.pv, depth: c.depth });
+				label = c.source === "cloud" ? `cloud · depth ${c.depth}` : `saved · depth ${c.depth}`;
+			}
 		}
+
+		const head = el.createDiv({ cls: "cr-ceval-head" });
+		const sw = head.createEl("label", { cls: "cr-switch", attr: { "aria-label": "Local engine" } });
+		const input = sw.createEl("input", { attr: { type: "checkbox" } });
+		input.checked = this.state.engineOn;
+		sw.createSpan({ cls: "cr-switch-track" });
+		input.addEventListener("change", () => this.toggleEngine(input.checked));
+		head.createSpan({ cls: "cr-ceval-score", text: rows[0] ? formatScore(rows[0].score) : "" });
+		head.createSpan({ cls: "cr-ceval-label", text: label || (this.state.engineOn ? (info.pos.isEnd() ? "Game over" : "Calculating…") : "Stockfish 18") });
+
 		if (!rows.length) {
-			if (this.state.engineOn) el.createDiv({ cls: "cr-engine-empty", text: info.pos.isEnd() ? "Game over." : "Thinking…" });
 			this.cg?.setAutoShapes([]);
 			return;
 		}
+		const pvs = el.createDiv({ cls: "cr-pvs" });
 		for (const r of rows) {
-			const row = el.createDiv({ cls: "cr-engine-line" });
-			row.createSpan({ cls: "cr-engine-score", text: formatScore(r.score) });
-			const moves = r.pv.map((u) => parseMoveUci(info.pos, u));
-			let san = "";
-			try {
-				const ok = [];
-				const p = info.pos.clone();
-				for (const m of moves) {
-					if (!m || !p.isLegal(m)) break;
-					ok.push(m);
-					p.play(m);
-				}
-				san = makeSanVariation(info.pos, ok);
-			} catch {
-				san = r.pv.join(" ");
-			}
-			row.createSpan({ cls: "cr-engine-pv", text: san });
-			row.createSpan({ cls: "cr-engine-depth", text: `d${r.depth}${r.label ? ` · ${r.label}` : ""}` });
-			const keep = row.createEl("button", { cls: "cr-btn cr-engine-keep", text: "+", attr: { title: "Add this line to the game as a variation", "aria-label": "Keep line" } });
-			keep.addEventListener("click", () => this.edit(() => {
-				addLine(this.game, this.state.path, r.pv);
-			}));
+			const row = pvs.createDiv({ cls: "cr-pv", attr: { title: "Play the first move" } });
+			row.createSpan({ cls: "cr-pv-score", text: formatScore(r.score) });
+			row.createSpan({ cls: "cr-pv-moves", text: this.pvSan(info, r.pv) });
+			row.addEventListener("click", () => {
+				if (r.pv[0]) this.playUci(r.pv[0]);
+			});
 		}
 		const best = rows[0].pv[0];
 		if (best && best.length >= 4) {
 			this.cg?.setAutoShapes([{ orig: best.slice(0, 2) as Key, dest: best.slice(2, 4) as Key, brush: "paleBlue" }]);
+		}
+	}
+
+	private pvSan(info: ReturnType<typeof infoAt>, pv: string[]): string {
+		try {
+			const ok = [];
+			const p = info.pos.clone();
+			for (const u of pv) {
+				const m = parseMoveUci(p, u);
+				if (!m || !p.isLegal(m)) break;
+				ok.push(m);
+				p.play(m);
+			}
+			return makeSanVariation(info.pos, ok);
+		} catch {
+			return pv.join(" ");
 		}
 	}
 
