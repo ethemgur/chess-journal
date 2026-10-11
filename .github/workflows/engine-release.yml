@@ -37,6 +37,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create engine-sf18 --title "Stockfish 18 lite (engine files)" \
+          gh release create engine-sf18 --prerelease --title "Stockfish 18 lite (engine files)" \
             --notes "Engine files downloaded by the plugin on first use. GPL-3.0, from the stockfish npm package 18.0.8 (Stockfish.js by Nathan Rugg)." \
             stockfish-18-lite-single.js stockfish-18-lite-single.wasm
