@@ -95,12 +95,10 @@ describe("summary cards on a 20-game fixture", () => {
 	});
 });
 
-describe("accuracy is never mixed across sites", () => {
-	it("chooses one site and uses only its games", () => {
-		const rows = [...fixture(), game({ site: "chesscom", myAccuracy: 95, oppAccuracy: 60 }), game({ site: "chesscom" })];
-		expect(chooseAccuracySite(rows)).toBe("lichess"); // 20 vs 1 with accuracy
-		expect(chooseAccuracySite(rows, "chesscom")).toBe("chesscom");
-		expect(accuracyRows(rows, "chesscom")).toHaveLength(1);
+describe("accuracy", () => {
+	it("uses Lichess games that carry Lichess accuracy", () => {
+		const rows = [...fixture(), game({ site: "otb" })];
+		expect(chooseAccuracySite(rows)).toBe("lichess");
 		expect(accuracyFigures(accuracyRows(rows, "lichess")).mine).toBe(72);
 		expect(chooseAccuracySite([game({})])).toBeUndefined();
 	});
@@ -119,11 +117,10 @@ describe("rating history", () => {
 			game({ date: "2026-09-01", playedAt: "2026-09-01T10:00:00Z", myRating: 2008 }),
 			game({ date: "2026-09-01", playedAt: "2026-09-01T11:00:00Z", myRating: 2001 }),
 			game({ date: "2026-09-03", playedAt: "2026-09-03T11:00:00Z", myRating: 2010 }),
-			game({ site: "chesscom", date: "2026-09-01", myRating: 1900 }),
 			game({ site: "otb", date: "2026-09-01", myRating: 1800 }),
 		];
 		const h = ratingHistory(rows);
-		expect(h.map((x) => x.group.id)).toEqual(["lichess|rapid", "chesscom|rapid"]); // OTB is not plotted
+		expect(h.map((x) => x.group.id)).toEqual(["lichess|rapid"]); // OTB is not plotted
 		expect(h[0].days.map((d) => [d.date, d.rating, d.games.length])).toEqual([["2026-09-01", 2001, 3], ["2026-09-03", 2010, 1]]);
 	});
 });
@@ -180,9 +177,9 @@ describe("periods, filters and rows", () => {
 		const strong = bandFigures(rows).find((x) => x.band === "much-stronger")!;
 		expect(strong.games).toHaveLength(2);
 		expect(strong.actualPct).toBeCloseTo(25);
-		const t = openingTable([game({ myAccuracy: 80 }), game({ myAccuracy: 70, opening: "Caro-Kann Defense: Classical" }), game({ site: "chesscom", myAccuracy: 99 })], "lichess");
+		const t = openingTable([game({ myAccuracy: 80 }), game({ myAccuracy: 70, opening: "Caro-Kann Defense: Classical" }), game({ site: "otb", myAccuracy: 99 })], "lichess");
 		expect(t[0].games).toHaveLength(3);
-		expect(t[0].accuracy).toBe(75); // the chess.com game's accuracy is not mixed in
+		expect(t[0].accuracy).toBe(75); // only Lichess accuracy counts
 		expect(t[0].accuracyGames).toBe(2);
 		expect(siteTimeGroups(fixture())[0].id).toBe("lichess|rapid");
 	});

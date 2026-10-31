@@ -9,8 +9,6 @@ export interface ChessJournalSettings {
 	// Accounts
 	lichessUsername: string;
 	lichessToken: string;
-	chesscomUsername: string;
-	contactEmail: string;
 	otbNames: string;
 	// Sync
 	gamesFolder: string;
@@ -48,8 +46,6 @@ export function defaultSettings(): ChessJournalSettings {
 	return {
 		lichessUsername: "",
 		lichessToken: "",
-		chesscomUsername: "",
-		contactEmail: "",
 		otbNames: "",
 		gamesFolder: "Chess/Games",
 		fileNameTemplate: "{date} {white} vs {black} ({site})",
@@ -108,14 +104,6 @@ export class ChessJournalSettingTab extends PluginSettingTab {
 				t.setValue(s.lichessToken).onChange(async (v) => { s.lichessToken = v.trim(); await save(); });
 			});
 		new Setting(containerEl)
-			.setName("chess.com username")
-			.setDesc("chess.com sync is off while this is empty.")
-			.addText((t) => t.setValue(s.chesscomUsername).onChange(async (v) => { s.chesscomUsername = v.trim(); await save(); }));
-		new Setting(containerEl)
-			.setName("Contact email for API User-Agent")
-			.setDesc("Sent to chess.com in the User-Agent header, as chess.com asks of API clients.")
-			.addText((t) => t.setValue(s.contactEmail).onChange(async (v) => { s.contactEmail = v.trim(); await save(); }));
-		new Setting(containerEl)
 			.setName("My OTB names")
 			.setDesc("Comma-separated names you appear under in PGN files, used to work out your colour.")
 			.addText((t) => t.setValue(s.otbNames).onChange(async (v) => { s.otbNames = v; await save(); }));
@@ -131,13 +119,13 @@ export class ChessJournalSettingTab extends PluginSettingTab {
 			.addText((t) => t.setValue(s.fileNameTemplate).onChange(async (v) => { s.fileNameTemplate = v || "{date} {white} vs {black} ({site})"; await save(); }));
 		new Setting(containerEl)
 			.setName("Time classes to import")
-			.setDesc("Uses each site's own label for the game's speed.");
+			.setDesc("Lichess speeds. Changing these re-reads your games from the start date on the next sync.");
 		const speeds: Record<TimeClass, [string, string]> = {
-			bullet: ["Bullet", "Lichess (incl. UltraBullet) and chess.com"],
-			blitz: ["Blitz", "Lichess and chess.com"],
-			rapid: ["Rapid", "Lichess and chess.com"],
-			classical: ["Classical", "Lichess only"],
-			daily: ["Daily", "chess.com Daily and Lichess Correspondence"],
+			bullet: ["Bullet", "Including UltraBullet"],
+			blitz: ["Blitz", ""],
+			rapid: ["Rapid", ""],
+			classical: ["Classical", ""],
+			daily: ["Correspondence", ""],
 		};
 		for (const c of TIME_CLASSES) {
 			new Setting(containerEl)
@@ -176,10 +164,14 @@ export class ChessJournalSettingTab extends PluginSettingTab {
 				this.display();
 			}));
 
-		new Setting(containerEl).setName("Engine").setHeading();
+		new Setting(containerEl).setName("Engine (OTB games)").setHeading();
+		containerEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Lichess games use Lichess's own computer analysis: request it on lichess.org and the next sync fills the note in. Stockfish on this device analyses OTB games only.",
+		});
 		new Setting(containerEl)
-			.setName("Analyse new games automatically")
-			.setDesc("Runs Stockfish on this device for every imported game. Off by default: the dashboard uses the accuracy Lichess and chess.com provide.")
+			.setName("Analyse new OTB games automatically")
+			.setDesc("Runs Stockfish on this device for every imported PGN game.")
 			.addToggle((t) => t.setValue(s.autoAnalyse).onChange(async (v) => { s.autoAnalyse = v; await save(); }));
 		new Setting(containerEl)
 			.setName("Analysis budget")

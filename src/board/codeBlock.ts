@@ -185,7 +185,7 @@ class ChessGameBlock extends MarkdownRenderChild {
 		if (c === "white" || c === "black") return c;
 		const s = this.plugin.settings;
 		const tags = pgnTags(this.source);
-		const names = [s.lichessUsername, s.chesscomUsername, ...s.otbNames.split(",")].map((x) => x.trim()).filter(Boolean);
+		const names = [s.lichessUsername, ...s.otbNames.split(",")].map((x) => x.trim()).filter(Boolean);
 		return matchMyColour(tags.get("White") ?? "", tags.get("Black") ?? "", names);
 	}
 

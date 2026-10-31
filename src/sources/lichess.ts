@@ -22,15 +22,17 @@ export interface LichessWindowOptions {
 	ratedOnly: boolean;
 }
 
+/** What every export asks for: PGN, clocks, and Lichess's computer analysis when the game has one. */
+const EXPORT_FIELDS = { pgnInJson: "true", clocks: "true", evals: "true", opening: "true", accuracy: "true" };
+
+/** Most game IDs one POST /api/games/export/_ids request may carry. */
+export const LICHESS_IDS_PER_REQUEST = 300;
+
 export function lichessExportUrl(o: LichessWindowOptions): string {
 	const q = new URLSearchParams({
 		since: String(o.since),
 		until: String(o.until),
-		pgnInJson: "true",
-		clocks: "true",
-		evals: "true",
-		opening: "true",
-		accuracy: "true",
+		...EXPORT_FIELDS,
 		sort: "dateAsc",
 		finished: "true",
 		ongoing: "false",
@@ -41,20 +43,47 @@ export function lichessExportUrl(o: LichessWindowOptions): string {
 	return `${LICHESS_HOST}/api/games/user/${encodeURIComponent(o.username)}?${q.toString()}`;
 }
 
-/** Fetch one window. requestUrl cannot stream, so the whole body is split on newlines. */
-export async function fetchLichessWindow(http: Http, o: LichessWindowOptions): Promise<LichessGame[]> {
+function headersFor(token?: string): Record<string, string> {
 	const headers: Record<string, string> = { Accept: "application/x-ndjson" };
-	if (o.token) headers.Authorization = `Bearer ${o.token}`;
-	const res = await http({ url: lichessExportUrl(o), headers });
-	if (res.status === 429) throw new RateLimitedError("Lichess");
-	if (res.status === 404) throw new HttpError(404, `Lichess user "${o.username}" was not found.`);
-	if (res.status === 401) throw new HttpError(401, "Lichess rejected the API token.");
-	if (res.status >= 400) throw new HttpError(res.status, `Lichess returned HTTP ${res.status}.`);
-	return res.text
+	if (token) headers.Authorization = `Bearer ${token}`;
+	return headers;
+}
+
+function checkStatus(status: number, username?: string): void {
+	if (status === 429) throw new RateLimitedError("Lichess");
+	if (status === 404 && username) throw new HttpError(404, `Lichess user "${username}" was not found.`);
+	if (status === 401) throw new HttpError(401, "Lichess rejected the API token.");
+	if (status >= 400) throw new HttpError(status, `Lichess returned HTTP ${status}.`);
+}
+
+/** requestUrl cannot stream, so the whole NDJSON body is split on newlines. */
+function parseNdjson(text: string): LichessGame[] {
+	return text
 		.split("\n")
 		.map((l) => l.trim())
 		.filter(Boolean)
 		.map((l) => JSON.parse(l) as LichessGame);
+}
+
+/** Fetch one window. */
+export async function fetchLichessWindow(http: Http, o: LichessWindowOptions): Promise<LichessGame[]> {
+	const res = await http({ url: lichessExportUrl(o), headers: headersFor(o.token) });
+	checkStatus(res.status, o.username);
+	return parseNdjson(res.text);
+}
+
+/** Fetch known games by ID (at most LICHESS_IDS_PER_REQUEST), e.g. to see whether they have been analysed since. */
+export async function fetchLichessByIds(http: Http, ids: string[], token?: string): Promise<LichessGame[]> {
+	if (!ids.length) return [];
+	const q = new URLSearchParams(EXPORT_FIELDS);
+	const res = await http({
+		url: `${LICHESS_HOST}/api/games/export/_ids?${q.toString()}`,
+		method: "POST",
+		headers: { ...headersFor(token), "Content-Type": "text/plain" },
+		body: ids.slice(0, LICHESS_IDS_PER_REQUEST).join(","),
+	});
+	checkStatus(res.status);
+	return parseNdjson(res.text);
 }
 
 /** One-month windows [since, until] covering [from, to]. */

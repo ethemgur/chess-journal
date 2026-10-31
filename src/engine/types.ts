@@ -10,7 +10,7 @@ export interface PlyAnalysis {
 	best: string; // UCI
 	pv: string[]; // first 8 plies, UCI
 	depth: number;
-	source: "local" | "cloud";
+	source: "local" | "cloud" | "lichess";
 }
 
 export interface GameAnalysis {
@@ -18,6 +18,10 @@ export interface GameAnalysis {
 	engine: string;
 	createdAt: string;
 	plies: PlyAnalysis[];
+	/** Move marks decided by the source (Lichess), by main-line ply (1 = first move). Engine analyses leave this out. */
+	marks?: Record<number, "inaccuracy" | "mistake" | "blunder">;
+	/** Lichess's comment on a marked move, by ply. */
+	comments?: Record<number, string>;
 }
 
 export interface EngineLine {

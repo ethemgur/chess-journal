@@ -1,7 +1,7 @@
 /**
  * Performance dashboard: filter bar, live rating cards, six stat cards with
- * period-over-period deltas, and nine panels. Uses only what Lichess and
- * chess.com provide: results, ratings, clocks and their accuracy figures. No
+ * period-over-period deltas, and nine panels. Uses only what Lichess
+ * provides: results, ratings, clocks and its accuracy figures. No
  * game is evaluated on this device. The one write is "Mark reviewed".
  */
 import { App, ItemView, Modal, WorkspaceLeaf, setIcon } from "obsidian";
@@ -51,14 +51,13 @@ export interface DashboardHost {
 	index: GameIndex;
 	ratings: RatingsCache;
 	settings(): ChessJournalSettings;
-	chesscomUserAgent(): string;
 	filters(): Filters;
 	saveFilters(f: Filters): void;
 	openGame(row: GameRow, ply?: number): void;
 	markReviewed(row: GameRow): Promise<void>;
 }
 
-const SITE_LABEL: Record<Site, string> = { lichess: "Lichess", chesscom: "chess.com", otb: "OTB" };
+const SITE_LABEL: Record<Site, string> = { lichess: "Lichess", otb: "OTB" };
 const RESULT_LABEL: Record<MyResult, string> = { win: "Wins", draw: "Draws", loss: "Losses" };
 const PERIODS: Array<[Period, string]> = [["30d", "30 days"], ["3m", "3 months"], ["12m", "12 months"], ["all", "All"], ["custom", "Custom"]];
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -223,7 +222,7 @@ export class DashboardView extends ItemView {
 				b.addEventListener("click", () => set(on ? chosen.filter((x) => x !== v) : [...chosen, v]));
 			}
 		};
-		toggles<Site>("Site", [["lichess", "Lichess"], ["chesscom", "chess.com"], ["otb", "OTB"]], f.sites, (v) => this.setFilters({ ...f, sites: v }));
+		toggles<Site>("Site", [["lichess", "Lichess"], ["otb", "OTB"]], f.sites, (v) => this.setFilters({ ...f, sites: v }));
 		toggles<TimeClass>("Time class", TIME_CLASSES.map((t) => [t, cap(t)] as [TimeClass, string]), f.timeClasses, (v) => this.setFilters({ ...f, timeClasses: v }));
 
 		const colour = bar.createDiv({ cls: "cr-filter" });
@@ -249,18 +248,6 @@ export class DashboardView extends ItemView {
 			const v = inp.value.trim();
 			if (v && !f.families.includes(v)) this.setFilters({ ...f, families: [...f.families, v] });
 		});
-
-		// Accuracy is on each site's own scale, so accuracy figures use one site at a time.
-		const accBox = bar.createDiv({ cls: "cr-filter" });
-		accBox.createSpan({ cls: "cr-filter-label", text: "Accuracy from" });
-		const counts: Record<AccuracySite, number> = {
-			lichess: rows.filter((g) => g.site === "lichess" && g.myAccuracy !== undefined).length,
-			chesscom: rows.filter((g) => g.site === "chesscom" && g.myAccuracy !== undefined).length,
-		};
-		for (const s of ["lichess", "chesscom"] as AccuracySite[]) {
-			const b = accBox.createEl("button", { cls: "cr-toggle" + (site === s ? " is-on" : ""), text: `${SITE_LABEL[s]} (${counts[s]})` });
-			b.addEventListener("click", () => this.setFilters({ ...f, accuracySite: s }));
-		}
 
 		const chips = this.body.createDiv({ cls: "cr-dash-chips" });
 		const chip = (text: string, remove: () => void) => {
@@ -313,7 +300,7 @@ export class DashboardView extends ItemView {
 				fill(undefined);
 				continue;
 			}
-			const load = g.site === "lichess" ? this.host.ratings.lichess(s.lichessUsername) : this.host.ratings.chesscom(s.chesscomUsername, this.host.chesscomUserAgent());
+			const load = this.host.ratings.lichess(s.lichessUsername);
 			void load.then((r) => fill(r?.[tc])).catch(() => fill(undefined));
 		}
 	}
@@ -441,8 +428,8 @@ export class DashboardView extends ItemView {
 	}
 
 	private accuracyFoot(n: number, site: AccuracySite | undefined): string {
-		if (!site || !n) return "No games with site accuracy here. Lichess gives accuracy for games analysed on Lichess; chess.com for games with a Game Review.";
-		return `${n} game${n === 1 ? "" : "s"} with ${SITE_LABEL[site]} accuracy (${SITE_LABEL[site]}'s own scale; sites are never mixed).`;
+		if (!site || !n) return "No games with Lichess accuracy here. Lichess gives accuracy for games analysed on lichess.org (“Request a computer analysis”).";
+		return `${n} game${n === 1 ? "" : "s"} with ${SITE_LABEL[site]} accuracy.`;
 	}
 
 	private legend(body: HTMLElement, items: Array<[string, string]>): void {

@@ -2,7 +2,7 @@
 	"id": "chess-review",
 	"name": "Chess Journal",
 	"minAppVersion": "1.5.0",
-	"description": "Sync your finished games from Lichess, chess.com and PGN files into one note per game, with an interactive board, annotations and offline Stockfish analysis.",
+	"description": "Sync your finished games from Lichess and PGN files into one note per game, with an interactive board, annotations, Lichess analysis and offline Stockfish analysis for OTB games.",
 	"author": "Ethem",
 	"authorUrl": "https://github.com/ethemgur",
 	"isDesktopOnly": false,

@@ -1,13 +1,14 @@
 /**
- * Incremental sync: fetch windows one request at a time, normalise, filter,
- * and hand each game to the note sink. Safe to re-run: the sink decides
- * whether a known game changed, and cursors only move after a window succeeds.
+ * Incremental Lichess sync: fetch month windows one request at a time, normalise,
+ * filter, and hand each game to the note sink. Safe to re-run: the sink decides
+ * whether a known game changed, and the cursor only moves after a window succeeds.
+ * Games still awaiting Lichess analysis are fetched again by ID on every sync,
+ * so their notes fill in once they have been analysed on lichess.org.
  */
 import type { GameRecord, TimeClass } from "../types";
 import { Http, RateLimitedError } from "../sources/http";
-import { fetchLichessWindow, monthWindows } from "../sources/lichess";
-import { archiveMonth, chesscomUserAgent, fetchArchiveList, fetchMonth } from "../sources/chesscom";
-import { Normalised, normaliseChesscom, normaliseLichess } from "../sources/normalise";
+import { LICHESS_IDS_PER_REQUEST, fetchLichessByIds, fetchLichessWindow, monthWindows } from "../sources/lichess";
+import { Normalised, normaliseLichess } from "../sources/normalise";
 
 export type UpsertResult = "created" | "updated" | "unchanged" | "deleted";
 
@@ -16,11 +17,11 @@ export interface NoteSink {
 }
 
 export interface SyncState {
-	lichess: Record<string, { cursor?: number }>;
-	chesscom: Record<string, { etags: Record<string, string>; synced?: boolean }>;
+	/** Per Lichess username: newest game seen, and the filters it was seen with. */
+	lichess: Record<string, { cursor?: number; filters?: string }>;
 }
 
-export const emptySyncState = (): SyncState => ({ lichess: {}, chesscom: {} });
+export const emptySyncState = (): SyncState => ({ lichess: {} });
 
 export interface SyncSummary {
 	created: number;
@@ -30,6 +31,8 @@ export interface SyncSummary {
 	skippedFilter: number;
 	skippedDeleted: number;
 	failed: number;
+	/** Games imported or re-checked that Lichess has not analysed yet. */
+	awaiting: number;
 	notes: string[];
 	aborted?: string;
 	cancelled?: boolean;
@@ -43,18 +46,16 @@ export const emptySummary = (): SyncSummary => ({
 	skippedFilter: 0,
 	skippedDeleted: 0,
 	failed: 0,
+	awaiting: 0,
 	notes: [],
 });
 
 export interface SyncOptions {
 	lichessUsername: string;
 	lichessToken: string;
-	chesscomUsername: string;
-	contactEmail: string;
 	timeClasses: TimeClass[];
 	ratedOnly: boolean;
 	importSince: string; // YYYY-MM-DD
-	version: string;
 }
 
 export interface SyncDeps {
@@ -67,6 +68,8 @@ export interface SyncDeps {
 	progress: (message: string) => void;
 	isCancelled: () => boolean;
 	onCreated?: (record: GameRecord) => void;
+	/** Lichess game IDs whose notes still await Lichess analysis. */
+	awaitingIds?: () => string[];
 }
 
 export const RATE_LIMIT_WAIT_MS = 60_000;
@@ -116,6 +119,7 @@ export class SyncEngine {
 			return;
 		}
 		const r = await this.deps.sink.upsert(n.record);
+		if (r !== "deleted" && n.record.siteAnalysis === "awaiting") summary.awaiting++;
 		if (r === "created") {
 			summary.created++;
 			this.deps.onCreated?.(n.record);
@@ -129,6 +133,13 @@ export class SyncEngine {
 		if (!user) return summary;
 		const key = user.toLowerCase();
 		const st = (this.deps.state.lichess[key] ??= {});
+		// Changing which games are wanted (speeds, rated, start date) starts again from the start date.
+		const filters = JSON.stringify([[...this.opts.timeClasses].sort(), this.opts.ratedOnly, this.opts.importSince]);
+		if (st.filters !== filters) {
+			st.cursor = undefined;
+			st.filters = filters;
+		}
+		const seen = new Set<string>();
 		const sinceDate = Date.parse(`${this.opts.importSince}T00:00:00Z`);
 		let from = st.cursor !== undefined ? st.cursor + 1 : sinceDate;
 		if (st.cursor !== undefined && this.opts.timeClasses.includes("daily")) {
@@ -166,6 +177,7 @@ export class SyncEngine {
 				}
 				let newest = st.cursor ?? 0;
 				for (const g of games) {
+					seen.add(g.id);
 					try {
 						await this.handle(normaliseLichess(g, user), summary);
 						newest = Math.max(newest, g.createdAt);
@@ -180,6 +192,7 @@ export class SyncEngine {
 					await this.deps.saveState();
 				}
 			}
+			if (!summary.cancelled) await this.recheckAwaiting(user, seen, summary);
 		} catch (e) {
 			if (e instanceof AbortRun) summary.aborted = e.message;
 			else throw e;
@@ -187,62 +200,34 @@ export class SyncEngine {
 		return summary;
 	}
 
-	async syncChesscom(summary: SyncSummary = emptySummary()): Promise<SyncSummary> {
-		const user = this.opts.chesscomUsername;
-		if (!user) return summary;
-		const key = user.toLowerCase();
-		const st = (this.deps.state.chesscom[key] ??= { etags: {} });
-		const ua = chesscomUserAgent(this.opts.version, user, this.opts.contactEmail);
-		const firstMonth = this.opts.importSince.slice(0, 7);
-		try {
-			this.deps.progress("Syncing chess.com: reading archive list");
-			const archives = await this.withRateLimit("chess.com", () => fetchArchiveList(this.deps.http, user, ua));
-			const months = archives.filter((u) => archiveMonth(u) >= firstMonth);
-			// Requests are strictly serial: one month at a time, awaited.
-			for (const url of months) {
-				if (this.deps.isCancelled()) {
-					summary.cancelled = true;
-					break;
-				}
-				const month = archiveMonth(url);
-				const label = new Date(`${month}-01T00:00:00Z`).toLocaleString("en", { month: "short", year: "numeric", timeZone: "UTC" });
-				this.deps.progress(`Syncing chess.com: ${label}, ${summary.created} new`);
-				let res;
-				try {
-					res = await this.withRateLimit("chess.com", () => fetchMonth(this.deps.http, url, ua, st.etags[url]));
-				} catch (e) {
-					if (e instanceof AbortRun) throw e;
-					summary.failed++;
-					summary.notes.push(`chess.com ${label}: ${(e as Error).message}`);
-					continue; // ETag left unchanged so the month is fetched again next time.
-				}
-				if (res.status === "unchanged") continue;
-				let monthOk = true;
-				for (const g of res.games) {
-					try {
-						await this.handle(normaliseChesscom(g, user), summary);
-					} catch (e) {
-						monthOk = false;
-						summary.failed++;
-						summary.notes.push(`chess.com game ${g.url}: ${(e as Error).message}`);
-					}
-				}
-				if (monthOk && res.etag) {
-					st.etags[url] = res.etag;
-					await this.deps.saveState();
-				}
+	/** Fetch games still awaiting Lichess analysis by ID, so their notes fill in once analysed. */
+	private async recheckAwaiting(user: string, seen: Set<string>, summary: SyncSummary): Promise<void> {
+		const ids = (this.deps.awaitingIds?.() ?? []).filter((id) => !seen.has(id));
+		for (let i = 0; i < ids.length; i += LICHESS_IDS_PER_REQUEST) {
+			if (this.deps.isCancelled()) {
+				summary.cancelled = true;
+				return;
 			}
-			st.synced = true;
-			await this.deps.saveState();
-			summary.notes.push("chess.com refreshes its archives up to every 12 hours, so very recent games may appear on a later sync.");
-		} catch (e) {
-			if (e instanceof AbortRun) summary.aborted = e.message;
-			else {
+			const batch = ids.slice(i, i + LICHESS_IDS_PER_REQUEST);
+			this.deps.progress(`Checking Lichess for new analyses: ${Math.min(i + batch.length, ids.length)} / ${ids.length}`);
+			let games;
+			try {
+				games = await this.withRateLimit("Lichess", () => fetchLichessByIds(this.deps.http, batch, this.opts.lichessToken || undefined));
+			} catch (e) {
+				if (e instanceof AbortRun) throw e;
 				summary.failed++;
-				summary.notes.push(`chess.com: ${(e as Error).message}`);
+				summary.notes.push(`Lichess analysis check: ${(e as Error).message}`);
+				continue;
+			}
+			for (const g of games) {
+				try {
+					await this.handle(normaliseLichess(g, user), summary);
+				} catch (e) {
+					summary.failed++;
+					summary.notes.push(`Lichess game ${g.id}: ${(e as Error).message}`);
+				}
 			}
 		}
-		return summary;
 	}
 }
 
@@ -258,6 +243,7 @@ export function formatSummary(s: SyncSummary): string {
 		parts.push(`${skipped} skipped (${why.join(", ")})`);
 	}
 	if (s.failed) parts.push(`${s.failed} failed`);
+	if (s.awaiting) parts.push(`${s.awaiting} awaiting Lichess analysis`);
 	let msg = parts.join(", ") + ".";
 	if (s.cancelled) msg = "Cancelled. " + msg;
 	if (s.aborted) msg = s.aborted + " " + msg;

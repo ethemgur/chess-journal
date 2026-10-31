@@ -673,7 +673,9 @@ export class BoardView {
 		}
 		if (isMain) {
 			const mark = this.marks.get(path.length);
-			if (mark) m.createSpan({ cls: `cr-mark cr-mark-${mark}`, attr: { "aria-label": MARK_LABEL[mark], title: MARK_LABEL[mark] } });
+			// Lichess's comment ("Mistake. Nf3 was best.") when the mark came from Lichess.
+			const title = (mark && this.analysis?.comments?.[path.length]) || (mark ? MARK_LABEL[mark] : "");
+			if (mark) m.createSpan({ cls: `cr-mark cr-mark-${mark}`, attr: { "aria-label": title, title } });
 		}
 		m.addEventListener("click", () => {
 			this.goto(path);
@@ -1027,7 +1029,11 @@ export class BoardView {
 		this.marks = new Map();
 		if (this.analysis) {
 			const plies = mainline(this.game);
-			this.marks = classifyGame(this.analysis.plies, plies.slice(1).map((p) => p.uci as string), plies[0].pos.turn).marks;
+			// Lichess analyses carry Lichess's own marks; engine analyses are classified here.
+			const own = this.analysis.marks;
+			this.marks = own
+				? new Map(Object.entries(own).map(([ply, mark]) => [Number(ply), mark] as [number, Mark]))
+				: classifyGame(this.analysis.plies, plies.slice(1).map((p) => p.uci as string), plies[0].pos.turn).marks;
 		}
 		this.renderMoves();
 		this.renderGraph();
@@ -1261,7 +1267,7 @@ export class BoardView {
 			const p = this.cachedPly();
 			if (p && p.pv.length) {
 				lines.push({ score: p.score, pv: p.pv, depth: p.depth });
-				label = p.source === "cloud" ? `cloud · depth ${p.depth}` : `saved · depth ${p.depth}`;
+				label = p.source === "lichess" ? "Lichess analysis" : p.source === "cloud" ? `cloud · depth ${p.depth}` : `saved · depth ${p.depth}`;
 			}
 		}
 		let idle = "Stockfish 18";

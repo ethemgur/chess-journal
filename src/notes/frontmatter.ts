@@ -153,11 +153,49 @@ export function positionFrontmatter(p?: PositionStats): Frontmatter {
 	return fm;
 }
 
+/** Engine label for analyses made by Lichess itself. */
+export const LICHESS_ENGINE = "lichess";
+
+/**
+ * Analysis keys from the site (Lichess games only): Lichess's counts once the game is
+ * analysed on lichess.org, else just "awaiting". Undefined for games the site does not analyse.
+ */
+export function siteAnalysisFrontmatter(r: GameRecord): Frontmatter | undefined {
+	const a = r.siteAnalysis;
+	if (!a) return undefined;
+	if (a === "awaiting") return { "analysis-status": "awaiting" };
+	const me = a[r.myColour];
+	const opp = a[r.myColour === "white" ? "black" : "white"];
+	const fm: Frontmatter = {
+		"analysis-status": "done",
+		engine: LICHESS_ENGINE,
+		"my-acpl": me.acpl ?? null,
+		"my-inaccuracies": me.inaccuracies,
+		"my-mistakes": me.mistakes,
+		"my-blunders": me.blunders,
+		"opp-mistakes": opp.mistakes,
+		"opp-blunders": opp.blunders,
+	};
+	if (fm["my-acpl"] === null) delete fm["my-acpl"];
+	return fm;
+}
+
+/**
+ * Whether sync should write the site's analysis keys over the note's current ones.
+ * A Lichess analysis always wins; "awaiting" never replaces an analysis made, queued
+ * or running on this device.
+ */
+export function shouldWriteSiteAnalysis(current: Record<string, unknown> | undefined, site: Frontmatter): boolean {
+	if (site["analysis-status"] !== "awaiting") return true;
+	const status = current?.["analysis-status"];
+	return status === undefined || status === null || status === "none" || status === "awaiting" || status === "failed";
+}
+
 /** Full frontmatter for a new note, in schema order. */
 export function newNoteFrontmatter(r: GameRecord, status: AnalysisStatus): Frontmatter {
 	return {
 		...syncFrontmatter(r),
-		"analysis-status": status,
+		...(siteAnalysisFrontmatter(r) ?? { "analysis-status": status }),
 		tags: [GAME_TAG],
 		reviewed: false,
 	};
