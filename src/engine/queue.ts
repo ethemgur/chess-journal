@@ -6,6 +6,8 @@ import { mainline, parseGame } from "../pgn/tree";
 import type { Http } from "../sources/http";
 import { classifyGame } from "./classify";
 import { cloudEval } from "./cloudEval";
+import { errorStats } from "../sources/errors";
+import { errorFrontmatter } from "../notes/frontmatter";
 import { CLOUD_EVAL_MAX_PLIES, MATE_CP } from "./constants";
 import type { AnalysisCache } from "./cache";
 import type { EngineService } from "./service";
@@ -237,6 +239,8 @@ export class AnalysisQueue {
 		const marks = classifyGame(out, plies.slice(1).map((p) => p.uci as string), startTurn);
 		const me = marks[game.myColour];
 		const opp = marks[game.myColour === "white" ? "black" : "white"];
+		// No phase division for engine analyses; clocks only when the PGN has them.
+		const errors = errorStats({ pgn: game.pgn, myColour: game.myColour, plies: out, marks: marks.marks, daily: false });
 		await this.host.writeResult(key, {
 			"analysis-status": "done",
 			engine: analysis.engine,
@@ -246,6 +250,7 @@ export class AnalysisQueue {
 			"my-blunders": me.blunders,
 			"opp-mistakes": opp.mistakes,
 			"opp-blunders": opp.blunders,
+			...errorFrontmatter(errors),
 		});
 	}
 }

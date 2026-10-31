@@ -45,7 +45,7 @@ describe("time figures", () => {
 	let n = 0;
 	const g = (p: Partial<GameRow>): GameRow => ({
 		key: `k${++n}`, path: `${n}.md`, site: "lichess", date: "2026-09-01", playedAt: "", myColour: "white", myResult: "win", result: "1-0",
-		family: "x", opponent: "o", reviewed: false, timeTrouble: false, oppTimeTrouble: false, ...p,
+		family: "x", opponent: "o", reviewed: false, analysed: false, timeTrouble: false, oppTimeTrouble: false, ...p,
 	});
 
 	it("who got into time trouble, wins and losses on time", () => {

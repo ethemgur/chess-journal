@@ -35,7 +35,26 @@ export interface GameRecord {
 	 * has not been analysed on lichess.org yet. Undefined for OTB games (analysed on device).
 	 */
 	siteAnalysis?: SiteAnalysis | "awaiting";
+	/** From the analysis (Lichess's): where my mistakes happened, missed chances, best and worst position. */
+	errors?: ErrorStats;
 	pgn: string;
+}
+
+/** Per-game mistake statistics (mistake = Lichess "Mistake" or "Blunder"), from my side. */
+export interface ErrorStats {
+	/** My mistakes in each phase; undefined without a phase division (OTB games). */
+	phases?: { opening: number; middlegame: number; endgame: number };
+	/** My mistakes made with my clock in time trouble; undefined without clocks. */
+	lowClock?: number;
+	/** Opponent's mistakes I did not punish (my reply gave most of it back). */
+	missed: number;
+	/** Opponent's mistakes. */
+	oppErrors: number;
+	/** My move number of my first mistake; undefined when I made none. */
+	firstError?: number;
+	/** Best and worst evaluation I held for a few moves, in pawns from my side (±10 cap). */
+	evalHigh: number;
+	evalLow: number;
 }
 
 export interface SideAnalysis {

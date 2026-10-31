@@ -51,7 +51,7 @@ describe("material figures", () => {
 	let n = 0;
 	const g = (p: Partial<GameRow>): GameRow => ({
 		key: `k${++n}`, path: `${n}.md`, site: "lichess", date: "2026-09-01", playedAt: "", myColour: "white", myResult: "win", result: "1-0",
-		myRating: 1500, oppRating: 1500, family: "x", opponent: "o", reviewed: false, moves: 30, materialLow: 0, materialHigh: 0, imbalances: [], endgame: false, ...p,
+		myRating: 1500, oppRating: 1500, family: "x", opponent: "o", reviewed: false, analysed: false, moves: 30, materialLow: 0, materialHigh: 0, imbalances: [], endgame: false, ...p,
 	});
 
 	it("comebacks and collapses", () => {

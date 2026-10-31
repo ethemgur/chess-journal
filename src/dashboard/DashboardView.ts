@@ -1,8 +1,8 @@
 /**
  * Performance dashboard: filter bar, live rating cards, six stat cards with
- * period-over-period deltas, and nine panels. Uses only what Lichess
- * provides: results, ratings, clocks and its accuracy figures. No
- * game is evaluated on this device. The one write is "Mark reviewed".
+ * period-over-period deltas, and panels. Uses what Lichess provides (results,
+ * ratings, clocks, accuracy and its computer analysis) and Stockfish analyses
+ * of OTB games; nothing is evaluated here. The one write is "Mark reviewed".
  */
 import { App, ItemView, Modal, WorkspaceLeaf, setIcon } from "obsidian";
 import type { Site, TimeClass } from "../types";
@@ -23,6 +23,7 @@ import {
 	accuracyByTimeClass,
 	accuracyFigures,
 	accuracyRows,
+	analysedRows,
 	bandFigures,
 	chooseAccuracySite,
 	clockRace,
@@ -30,6 +31,8 @@ import {
 	endgameFigures,
 	imbalanceTable,
 	materialFigures,
+	mistakeFigures,
+	mistakeTrend,
 	openingTable,
 	performanceOf,
 	periodRanges,
@@ -41,7 +44,7 @@ import {
 	timeFigures,
 	vsExpected,
 } from "./compute";
-import { BANDS, BAND_LABEL, Band, CLOCK_EDGE_MOVE, CLOCK_EDGE_PCT, IMBALANCE_LABEL, MATERIAL_SWING, MyResult } from "./definitions";
+import { BANDS, BAND_LABEL, Band, CLOCK_EDGE_MOVE, CLOCK_EDGE_PCT, IMBALANCE_LABEL, MATERIAL_SWING, MISSED_GIVE_BACK, MyResult, WINNING_EVAL } from "./definitions";
 import { Tooltip, barChart, lineChart } from "./charts";
 
 export const VIEW_TYPE_DASHBOARD = "chess-journal-dashboard";
@@ -64,6 +67,7 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const pct = (v?: number) => (v === undefined ? "–" : `${v.toFixed(1)}%`);
 const acc = (v?: number) => (v === undefined ? "–" : v.toFixed(1));
 const fmtSeconds = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : `${Math.round(s)} s`);
+const per = (v?: number) => (v === undefined ? "–" : v.toFixed(2));
 const signed = (v: number, digits = 1) => `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(v).toFixed(digits)}`;
 const groupLabel = (g: { site: Site; timeClass?: TimeClass }) => `${SITE_LABEL[g.site]} ${g.timeClass ?? ""}`.trim();
 const today = () => new Date().toISOString().slice(0, 10);
@@ -155,7 +159,7 @@ export class DashboardView extends ItemView {
 		const accRows = accuracyRows(rows, site);
 		const accPrev = prev ? accuracyRows(prev, site) : undefined;
 
-		this.renderHeader(rows, rows.filter((g) => g.myAccuracy !== undefined).length);
+		this.renderHeader(rows, analysedRows(rows).length);
 		this.renderFilters(all, rows, site);
 		const summary = this.body.createDiv({ cls: "cr-dash-summary" });
 		this.renderRatingCards(summary.createDiv({ cls: "cr-dash-ratings" }), rows);
@@ -164,6 +168,8 @@ export class DashboardView extends ItemView {
 
 		const panels = this.body.createDiv({ cls: "cr-dash-panels" });
 		this.panelRatingHistory(panels, rows);
+		this.panelMistakeTrend(panels, rows);
+		this.panelMistakes(panels, rows);
 		this.panelBands(panels, rows);
 		this.panelOpenings(panels, rows, site);
 		this.panelComebacks(panels, rows);
@@ -177,10 +183,10 @@ export class DashboardView extends ItemView {
 		this.contentEl.scrollTop = scroll;
 	}
 
-	private renderHeader(rows: GameRow[], withAccuracy: number): void {
+	private renderHeader(rows: GameRow[], analysed: number): void {
 		const head = this.body.createDiv({ cls: "cr-dash-head" });
 		head.createEl("h2", { text: "Performance" });
-		head.createSpan({ cls: "cr-dash-size", text: `${rows.length} games · ${withAccuracy} with site accuracy` });
+		head.createSpan({ cls: "cr-dash-size", text: `${rows.length} games · ${analysed} analysed` });
 		const actions = head.createDiv({ cls: "cr-dash-actions" });
 		const filtersBtn = actions.createEl("button", { cls: "cr-dash-filters-btn", text: "Filters" });
 		filtersBtn.addEventListener("click", () => {
@@ -386,19 +392,24 @@ export class DashboardView extends ItemView {
 		this.statCard(el, {
 			title: `Accuracy · ${siteName}`,
 			value: a.mine !== undefined ? acc(a.mine) : undefined,
-			sub: a.median !== undefined ? `Median ${acc(a.median)} · ${a.games} games` : "",
+			sub: a.opp !== undefined && a.edge !== undefined ? `Opponents ${acc(a.opp)} (${signed(a.edge)}) · ${a.games} games` : a.median !== undefined ? `Median ${acc(a.median)} · ${a.games} games` : "",
 			games: a.games,
 			delta: aPrev?.mine !== undefined && a.mine !== undefined && enoughPrev(aPrev.games) ? { value: a.mine - aPrev.mine, text: signed(a.mine - aPrev.mine), goodWhen: "up" } : undefined,
 			onClick: () => this.openList(`Games with ${siteName} accuracy`, accRows),
 		});
 
+		const m = mistakeFigures(rows);
+		const mPrev = prev ? mistakeFigures(prev) : undefined;
 		this.statCard(el, {
-			title: "Accuracy vs opponents",
-			value: a.edge !== undefined ? signed(a.edge) : undefined,
-			sub: a.opp !== undefined ? `Opponents ${acc(a.opp)} in the same games` : "",
-			games: a.edgeGames,
-			delta: aPrev?.edge !== undefined && a.edge !== undefined && enoughPrev(aPrev.edgeGames) ? { value: a.edge - aPrev.edge, text: signed(a.edge - aPrev.edge), goodWhen: "up" } : undefined,
-			onClick: () => this.openList("Accuracy vs opponents", accRows.filter((g) => g.oppAccuracy !== undefined)),
+			title: "Mistakes per game",
+			value: m.errorsPerGame !== undefined ? per(m.errorsPerGame) : undefined,
+			sub: m.analysed.length ? `Blunders ${per(m.blundersPerGame)}${m.acpl !== undefined ? ` · ACPL ${Math.round(m.acpl)}` : ""} · ${m.analysed.length} games` : "",
+			games: m.analysed.length,
+			delta:
+				mPrev?.errorsPerGame !== undefined && m.errorsPerGame !== undefined && enoughPrev(mPrev.analysed.length)
+					? { value: m.errorsPerGame - mPrev.errorsPerGame, text: signed(m.errorsPerGame - mPrev.errorsPerGame, 2), goodWhen: "down" }
+					: undefined,
+			onClick: () => this.openList("Analysed games", m.analysed),
 		});
 
 		const t = timeFigures(rows);
@@ -474,6 +485,89 @@ export class DashboardView extends ItemView {
 		foot("One point per day: the rating before that day's last game. Click a day to see its games.");
 	}
 
+	private analysedFoot(analysed: number, total: number): string {
+		const awaiting = total - analysed;
+		return `${analysed} of ${total} games analysed.` + (awaiting ? " Games are analysed when you request a computer analysis on lichess.org (OTB games: “Analyse this game”), so these figures may lean towards the games you chose to look at." : "");
+	}
+
+	private panelMistakeTrend(parent: HTMLElement, rows: GameRow[]): void {
+		const { body, foot } = this.panel(parent, "Mistake trend", "Am I making fewer mistakes?");
+		const months = mistakeTrend(rows);
+		if (!months.length) {
+			body.createDiv({ cls: "cr-empty", text: "No analysed games in this selection." });
+			foot(this.analysedFoot(0, rows.length));
+			return;
+		}
+		const x = (m: string) => Date.parse(`${m}-15T00:00:00Z`);
+		const tip = (m: (typeof months)[number]) =>
+			`${m.month} · ${per(m.errorsPerGame)} mistakes, ${per(m.blundersPerGame)} blunders per game${m.acpl !== undefined ? ` · ACPL ${Math.round(m.acpl)}` : ""} · ${m.games.length} games`;
+		this.legend(body, [["Mistakes + blunders per game", "var(--cr-c1)"], ["Blunders per game", "var(--cr-c2)"]]);
+		lineChart(
+			body.createDiv({ cls: "cr-chart-box" }),
+			[
+				{ name: "Mistakes", color: "var(--cr-c1)", dots: true, points: months.map((m) => ({ x: x(m.month), y: m.errorsPerGame, data: m, tip: tip(m) })) },
+				{ name: "Blunders", color: "var(--cr-c2)", dots: true, points: months.map((m) => ({ x: x(m.month), y: m.blundersPerGame, data: m, tip: tip(m) })) },
+			],
+			{
+				tip: this.tip,
+				zeroBased: true,
+				yFormat: (v) => v.toFixed(1),
+				xFormat: (ms) => new Date(ms).toISOString().slice(0, 7),
+				onClick: (p) => this.openList(`Analysed games · ${p.data.month}`, p.data.games),
+			},
+		);
+		foot(`One point per month. ${this.analysedFoot(analysedRows(rows).length, rows.length)}`);
+	}
+
+	private panelMistakes(parent: HTMLElement, rows: GameRow[]): void {
+		const { body, foot } = this.panel(parent, "Where I make mistakes", "When and how do my mistakes happen?");
+		const m = mistakeFigures(rows);
+		const min = this.minGames();
+		if (!m.analysed.length) {
+			body.createDiv({ cls: "cr-empty", text: "No analysed games in this selection." });
+			foot(this.analysedFoot(0, rows.length));
+			return;
+		}
+		const figs = body.createDiv({ cls: "cr-figs cr-figs-3" });
+		const fig = (value: string, label: string, sub: string, n: number, games?: GameRow[]) => {
+			const f = figs.createDiv({ cls: "cr-fig" + (games?.length ? " is-clickable" : "") + (n >= min ? "" : " is-muted") });
+			f.createDiv({ cls: "cr-fig-value", text: n >= min ? value : "–" });
+			f.createDiv({ cls: "cr-fig-label", text: label });
+			if (sub) f.createDiv({ cls: "cr-fig-label cr-fig-sub", text: sub });
+			if (games?.length) f.addEventListener("click", () => this.openList(cap(label), games));
+		};
+		const whole = (v?: number) => (v === undefined ? "–" : `${Math.round(v)}%`);
+		fig(per(m.errorsPerGame), "mistakes per game", `Opponents ${per(m.oppErrorsPerGame)}`, m.analysed.length, m.analysed);
+		fig(whole(m.lowClockPct), "made in time trouble", `${m.lowClockErrors} of ${m.clockErrors} mistakes`, m.clockGames.length, m.clockGames.filter((g) => (g.errLowClock ?? 0) > 0));
+		fig(whole(m.missedPct), "of their mistakes not punished", `${m.missed} of ${m.oppErrors}`, m.analysed.length, m.missedGames);
+		fig(m.firstErrorMedian !== undefined ? `move ${Math.round(m.firstErrorMedian)}` : "–", "first mistake", "median", m.analysed.length);
+		fig(whole(m.analysed.length ? (m.clean.length / m.analysed.length) * 100 : undefined), "games without a mistake", `${m.clean.length} games`, m.analysed.length, m.clean);
+		fig(per(m.inaccuraciesPerGame), "inaccuracies per game", m.acpl !== undefined ? `ACPL ${Math.round(m.acpl)}` : "", m.analysed.length);
+		if (m.phaseGames.length) {
+			const n = m.phaseGames.length;
+			const phase = (key: "opening" | "middlegame" | "endgame", label: string, has: (g: GameRow) => boolean) => ({
+				label,
+				sub: `${n} games`,
+				muted: n < min,
+				data: m.phaseGames.filter(has),
+				bars: [{ name: "Me", value: n >= min ? m.byPhase[key] : undefined, color: "var(--cr-c1)", tip: `${label}: ${per(m.byPhase[key])} mistakes per game` }],
+			});
+			body.createDiv({ cls: "cr-panel-lead", text: "Mistakes per game, by phase" });
+			barChart(
+				body.createDiv({ cls: "cr-chart-box" }),
+				[
+					phase("opening", "Opening", (g) => (g.errOpening ?? 0) > 0),
+					phase("middlegame", "Middlegame", (g) => (g.errMiddlegame ?? 0) > 0),
+					phase("endgame", "Endgame", (g) => (g.errEndgame ?? 0) > 0),
+				],
+				{ tip: this.tip, format: (v) => v.toFixed(2), onClick: (g) => this.openList(`Mistakes in the ${g.label.toLowerCase()}`, g.data) },
+			);
+		}
+		foot(
+			`Mistakes = Lichess's “Mistake” and “Blunder” (for OTB games, the same thresholds on Stockfish's analysis). Time trouble: clock below 10% of base time or 30 s before the move. Not punished: my reply gave back at least ${Math.round(MISSED_GIVE_BACK * 100)}% of what their mistake gave me. Phases follow Lichess's division (Lichess games only). ${this.analysedFoot(m.analysed.length, rows.length)}`,
+		);
+	}
+
 	private panelBands(parent: HTMLElement, rows: GameRow[]): void {
 		const { body, foot } = this.panel(parent, "Against stronger and weaker", "Do I underperform against a kind of opponent?");
 		const min = this.minGames();
@@ -505,7 +599,7 @@ export class DashboardView extends ItemView {
 		const wrap = body.createDiv({ cls: "cr-table-wrap" });
 		const t = wrap.createEl("table", { cls: "cr-table" });
 		const head = t.createEl("thead").createEl("tr");
-		for (const h of ["Opening", "Games", "Score", "Vs expected", site ? `Accuracy (${SITE_LABEL[site]})` : "Accuracy"]) head.createEl("th", { text: h });
+		for (const h of ["Opening", "Games", "Score", "Vs expected", site ? `Accuracy (${SITE_LABEL[site]})` : "Accuracy", "Mistakes / game"]) head.createEl("th", { text: h });
 		const tb = t.createEl("tbody");
 		const min = this.minGames();
 		let colour: string | undefined;
@@ -529,18 +623,19 @@ export class DashboardView extends ItemView {
 			tr.createEl("td", { text: enough ? pct(r.scorePct) : "–" });
 			tr.createEl("td", { text: enough && r.vsExpected !== undefined ? signed(r.vsExpected) : "–" });
 			tr.createEl("td", { text: r.accuracyGames >= min ? `${acc(r.accuracy)} (${r.accuracyGames})` : r.accuracyGames ? `${r.accuracyGames} games` : "–" });
+			tr.createEl("td", { text: r.analysedGames >= min ? `${per(r.errorsPerGame)} (${r.analysedGames})` : r.analysedGames ? `${r.analysedGames} games` : "–" });
 			tr.addEventListener("click", () => this.setFilters({ ...this.filters, families: [r.family] }));
 		};
 		for (const r of table) {
 			if (r.colour !== colour) {
 				colour = r.colour;
 				const tr = tb.createEl("tr", { cls: "cr-group-row" });
-				tr.createEl("td", { text: `As ${r.colour}`, attr: { colspan: "5" } });
+				tr.createEl("td", { text: `As ${r.colour}`, attr: { colspan: "6" } });
 			}
 			addRow(r, false);
 			if (r.variations && this.expanded.has(`${r.colour}|${r.family}`)) for (const v of r.variations) addRow(v, true);
 		}
-		foot("A poor score with good accuracy points to the opposition you meet in that opening; poor accuracy points to your play. Click a row to filter.");
+		foot("A poor score with few mistakes points to the opposition you meet in that opening; many mistakes point to your play. Mistakes = mistakes + blunders in analysed games. Click a row to filter.");
 	}
 
 	/** Table of games split by result; each count opens its games. */
@@ -579,10 +674,10 @@ export class DashboardView extends ItemView {
 	}
 
 	private panelComebacks(parent: HTMLElement, rows: GameRow[]): void {
-		const { body, foot } = this.panel(parent, "Comebacks and collapses", "Do I save bad positions and convert good ones?");
+		const { body, foot } = this.panel(parent, "Converting and saving", "Do I win winning positions and save lost ones?");
 		const m = materialFigures(rows);
 		if (!m.withMoves.length) {
-			body.createDiv({ cls: "cr-empty", text: "No games with move statistics yet." });
+			body.createDiv({ cls: "cr-empty", text: "No analysed games or move statistics yet." });
 			foot(this.movesFoot(m.withoutMoves).trim());
 			return;
 		}
@@ -594,15 +689,20 @@ export class DashboardView extends ItemView {
 			f.createDiv({ cls: "cr-fig-label cr-fig-sub", text: sub });
 			if (games.length) f.addEventListener("click", () => this.openList(cap(label), games));
 		};
-		fig(String(m.turnedAround.length), "turned around", `${m.down.wins.length} W · ${m.down.draws.length} D`, m.turnedAround);
+		fig(m.up.games.length ? `${Math.round((m.up.wins.length / m.up.games.length) * 100)}%` : "–", "winning positions won", `${m.up.wins.length} of ${m.up.games.length}`, m.up.wins);
 		fig(String(m.letSlip.length), "let slip", `${m.up.draws.length} D · ${m.up.losses.length} L`, m.letSlip);
-		fig(m.up.games.length ? `${Math.round((m.up.wins.length / m.up.games.length) * 100)}%` : "–", "won when ahead", `${m.up.wins.length} of ${m.up.games.length}`, m.up.wins);
-		this.resultTable(body, "Material", [
-			{ label: `Was down ${MATERIAL_SWING}+`, split: m.down },
-			{ label: `Was up ${MATERIAL_SWING}+`, split: m.up },
+		fig(String(m.turnedAround.length), "saved", `${m.down.wins.length} W · ${m.down.draws.length} D of ${m.down.games.length} lost positions`, m.turnedAround);
+		this.resultTable(body, "Position", [
+			{ label: "Was winning", split: m.up },
+			{ label: "Was losing", split: m.down },
 		]);
+		const byMaterial = m.withMoves.length - m.byEval;
 		foot(
-			`Counted from the pieces on the board (pawn 1, knight and bishop 3, rook 5, queen 9), no engine: down or up at least ${MATERIAL_SWING} points for three moves or more. Sacrifices count too, and a position can be lost without being down material.${this.movesFoot(m.withoutMoves)}`,
+			`Winning / losing: the evaluation was at least ${WINNING_EVAL} pawns for me / against me for two moves or more (${m.byEval} analysed games).` +
+				(byMaterial
+					? ` ${byMaterial} game${byMaterial === 1 ? "" : "s"} without an analysis are judged by material instead: up or down ${MATERIAL_SWING} points for three moves or more.`
+					: "") +
+				this.movesFoot(m.withoutMoves),
 		);
 	}
 
@@ -753,13 +853,13 @@ export class DashboardView extends ItemView {
 		const { body, foot } = this.panel(parent, "Review queue", "Which games should I review next?");
 		const q = reviewQueue(rows);
 		if (!q.length) {
-			body.createDiv({ cls: "cr-empty", text: "Nothing to review: no unreviewed games here with both players' accuracy." });
+			body.createDiv({ cls: "cr-empty", text: "Nothing to review: no unreviewed analysed games here." });
 			return;
 		}
 		const wrap = body.createDiv({ cls: "cr-table-wrap" });
 		const t = wrap.createEl("table", { cls: "cr-table" });
 		const head = t.createEl("thead").createEl("tr");
-		for (const h of ["Date", "Opponent", "Result", "Accuracy", ""]) head.createEl("th", { text: h });
+		for (const h of ["Date", "Opponent", "Result", "Mistakes", "Accuracy", ""]) head.createEl("th", { text: h });
 		const tb = t.createEl("tbody");
 		for (const item of q) {
 			const g = item.game;
@@ -768,8 +868,16 @@ export class DashboardView extends ItemView {
 			const opp = tr.createEl("td");
 			opp.createDiv({ text: g.opponent });
 			opp.createDiv({ cls: "cr-td-sub", text: SITE_LABEL[g.site] });
-			tr.createEl("td", { cls: `cr-result is-${g.myResult}`, text: g.myResult });
-			tr.createEl("td", { text: `${Math.round(g.myAccuracy)} – ${Math.round(g.oppAccuracy)}`, attr: { title: "My accuracy – my opponent's" } });
+			const res = tr.createEl("td", { cls: `cr-result is-${g.myResult}`, text: g.myResult });
+			if (item.thrownWin) res.createDiv({ cls: "cr-td-sub", text: "was winning" });
+			tr.createEl("td", {
+				text: g.analysed ? `${g.myBlunders ?? 0} B · ${g.myMistakes ?? 0} M` : "–",
+				attr: { title: "My blunders and mistakes" },
+			});
+			tr.createEl("td", {
+				text: g.myAccuracy !== undefined && g.oppAccuracy !== undefined ? `${Math.round(g.myAccuracy)} – ${Math.round(g.oppAccuracy)}` : "–",
+				attr: { title: "My accuracy – my opponent's" },
+			});
 			const td = tr.createEl("td");
 			const b = td.createEl("button", { cls: "cr-mark-btn clickable-icon", attr: { "aria-label": "Mark reviewed", title: "Mark reviewed" } });
 			setIcon(b, "check");
@@ -781,7 +889,7 @@ export class DashboardView extends ItemView {
 			});
 			tr.addEventListener("click", () => this.host.openGame(g));
 		}
-		foot("Ranked by how much less accurate I was than my opponent in the same game (points ÷ 10, up to 2), +0.5 if I lost. ✓ marks a game reviewed.");
+		foot("Ranked by my blunders (1 each) and mistakes (½ each, up to 2 together), how much less accurate I was than my opponent (points ÷ 10, up to 1), +0.5 if I let a winning position go and +0.5 if I lost. ✓ marks a game reviewed.");
 	}
 
 	private openList(title: string, games: GameRow[]): void {
@@ -814,6 +922,7 @@ export class GameListModal extends Modal {
 			["result", "Result", (g) => g.myResult],
 			["opening", "Opening", (g) => g.opening ?? g.eco ?? ""],
 			["accuracy", "Accuracy", (g) => (g.myAccuracy !== undefined ? g.myAccuracy : "–")],
+			["mistakes", "Mistakes", (g) => (g.analysed ? (g.myMistakes ?? 0) + (g.myBlunders ?? 0) : "–")],
 			["reviewed", "Reviewed", (g) => (g.reviewed ? "yes" : "")],
 		];
 		const wrap = contentEl.createDiv({ cls: "cr-table-wrap" });

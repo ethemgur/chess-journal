@@ -23,7 +23,7 @@ export interface LichessWindowOptions {
 }
 
 /** What every export asks for: PGN, clocks, and Lichess's computer analysis when the game has one. */
-const EXPORT_FIELDS = { pgnInJson: "true", clocks: "true", evals: "true", opening: "true", accuracy: "true" };
+const EXPORT_FIELDS = { pgnInJson: "true", clocks: "true", evals: "true", opening: "true", accuracy: "true", division: "true" };
 
 /** Most game IDs one POST /api/games/export/_ids request may carry. */
 export const LICHESS_IDS_PER_REQUEST = 300;
