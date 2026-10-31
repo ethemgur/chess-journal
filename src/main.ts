@@ -422,13 +422,7 @@ export default class ChessJournalPlugin extends Plugin {
 		this.addCommand({
 			id: "refresh-site-data",
 			name: "Refresh Lichess data for all games",
-			callback: async () => {
-				// Re-fetch everything since "Import games since": notes only get their site-owned keys
-				// (accuracy, Lichess analysis, clocks, move statistics) updated; nothing else is touched.
-				this.data.sync = emptySyncState();
-				await this.savePluginData();
-				await this.runSync();
-			},
+			callback: () => void this.refreshAll(),
 		});
 	}
 
@@ -446,6 +440,16 @@ export default class ChessJournalPlugin extends Plugin {
 				if (this.settings.autoAnalyse) void this.queue.enqueue([r.key]);
 			},
 		});
+	}
+
+	/**
+	 * Re-fetch everything since "Import games since": notes only get their Lichess-owned keys
+	 * (accuracy, Lichess analysis, clocks, move statistics) updated; nothing else is touched.
+	 */
+	async refreshAll(): Promise<void> {
+		this.data.sync = emptySyncState();
+		await this.savePluginData();
+		await this.runSync();
 	}
 
 	/** Lichess games are analysed on lichess.org: open the game there to request it. */

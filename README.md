@@ -15,7 +15,7 @@ Compatible with Lichess. Not affiliated with it.
 ## Setup
 
 1. Install and enable the plugin.
-2. Open **Settings → Chess Journal**, enter your Lichess username, and choose the speeds to import.
+2. Open **Settings → Chess Journal**, enter your Lichess username (**Check** confirms it and shows your ratings), and pick the speeds to import.
 3. Run **Sync Lichess games** from the command palette or the ribbon menu.
 4. Optional: the board's engine (and the OTB analysis queue, off by default) asks to download Stockfish the first time you use it (about 7.3 MB, once). Lichess games and the dashboard do not need it.
 
@@ -100,11 +100,11 @@ Lichess games use the computer analysis Lichess made of them; nothing runs on yo
 - A game imported before it was analysed gets `analysis-status: awaiting`. Every sync asks Lichess again for all awaiting games (by ID, 300 per request), and fills the note in once the analysis exists: `analysis-status: done`, `engine: lichess`, your inaccuracies, mistakes, blunders and ACPL, your opponent's mistakes and blunders, and both accuracies.
 - The board shows Lichess's evaluation for every move, its marks (hover a mark for Lichess's comment, such as "Mistake. Nf3 was best.") and its best line where it judged a move inaccurate.
 - An analysis you already ran on this device is kept until Lichess's arrives.
-- Changing the speeds, **Rated games only** or **Import games since** re-reads your games from the start date on the next sync.
+- Changing the speeds, **Rated games only** or **Games since** re-reads your games from the start date on the next sync.
 
 ## On-device analysis for OTB games (optional)
 
-Off by default. Turn on **Analyse new OTB games automatically** (or run **Analyse this game** on an OTB game) to have Stockfish analyse imported PGN games on your device.
+Off by default. Turn on **Analyse imported games automatically** (under Over-the-board games) (or run **Analyse this game** on an OTB game) to have Stockfish analyse imported PGN games on your device.
 
 - Each game's main line is analysed once with a fixed setting (1.5 s per position by default), so mistake counts are comparable across months. The setting used is stored in each game's `engine` key.
 - The opening uses Lichess cloud eval: up to 20 plies, stopping at the first position the cloud doesn't have.
@@ -137,7 +137,7 @@ Notes from earlier versions get these keys (and the clock keys below) from their
 
 **Accuracy comes from Lichess:** it exists for games analysed on Lichess. The review queue ranks unreviewed games by how much less accurate you were than your opponent in the same game, +0.5 if you lost; **Mark reviewed** sets `reviewed: true` in that note, the dashboard's only write.
 
-Accuracy and analysis that Lichess adds later arrive on the next sync for games marked "awaiting". **Refresh Lichess data for all games** downloads all your games again and updates only the Lichess-owned keys, for example after deleting notes you want back (clear **Deleted games** in the settings first).
+Accuracy and analysis that Lichess adds later arrive on the next sync for games marked "awaiting". **Refresh Lichess data for all games** (also **Re-read all** in the settings) downloads all your games again and updates only the Lichess-owned keys, for example after deleting notes you want back (clear **Deleted games** in the settings first).
 
 ## Commands
 

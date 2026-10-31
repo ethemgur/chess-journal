@@ -31,6 +31,6 @@ describe("engine download verification", () => {
 describe("analysis cache", () => {
 	it("uses file-system-safe names", () => {
 		expect(cacheFileName("lichess:abcd1234")).toBe("lichess_abcd1234.json");
-		expect(cacheFileName("chesscom:1a2b-3c")).toBe("chesscom_1a2b-3c.json");
+		expect(cacheFileName("otb:1a2b-3c")).toBe("otb_1a2b-3c.json");
 	});
 });

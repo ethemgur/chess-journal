@@ -82,7 +82,8 @@ const num = (v: unknown) =>
 /** Build a row from game-note frontmatter; undefined when the note is not a usable game. */
 export function rowFromFrontmatter(path: string, fm: Record<string, unknown>): GameRow | undefined {
 	const key = str(fm["game-key"]);
-	const site = str(fm.site) as Site | undefined;
+	// Only Lichess and OTB notes count (notes left from the removed chess.com sync are ignored).
+	const site = fm.site === "lichess" || fm.site === "otb" ? (fm.site as Site) : undefined;
 	const myColour = fm["my-colour"] === "black" ? "black" : fm["my-colour"] === "white" ? "white" : undefined;
 	const myResult = fm["my-result"];
 	if (!key || !site || !myColour || (myResult !== "win" && myResult !== "loss" && myResult !== "draw")) return undefined;

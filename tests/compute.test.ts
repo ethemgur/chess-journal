@@ -164,13 +164,14 @@ describe("periods, filters and rows", () => {
 	});
 	it("rows from frontmatter, including site accuracy and clocks", () => {
 		const r = rowFromFrontmatter("a.md", {
-			"game-key": "chesscom:1", site: "chesscom", "my-colour": "black", "my-result": "draw", result: "1/2-1/2",
+			"game-key": "lichess:abcd1234", site: "lichess", "my-colour": "black", "my-result": "draw", result: "1/2-1/2",
 			white: "x", black: "me", date: "2026-10-01", "my-rating": 1990, "opp-rating": "2010", "time-class": "blitz",
 			rated: true, opening: "Sicilian Defense: Najdorf", reviewed: true, "site-accuracy": 84.3, "opp-accuracy": 79.1,
 			"time-trouble": false, "first-10-seconds": 45,
 		})!;
 		expect(r).toMatchObject({ opponent: "x", myRating: 1990, oppRating: 2010, family: "Sicilian Defense", reviewed: true, myAccuracy: 84.3, oppAccuracy: 79.1, timeTrouble: false, first10Seconds: 45 });
 		expect(rowFromFrontmatter("b.md", { site: "lichess" })).toBeUndefined();
+		expect(rowFromFrontmatter("c.md", { "game-key": "chesscom:1", site: "chesscom", "my-colour": "white", "my-result": "win" })).toBeUndefined();
 	});
 	it("bands, openings and groups", () => {
 		const rows = [game({ oppRating: 2300, myResult: "draw" }), game({ oppRating: 2250, myResult: "loss" }), game({ oppRating: 2000 })];

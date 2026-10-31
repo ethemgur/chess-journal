@@ -842,6 +842,36 @@
 	border-top: none;
 }
 
+/* Settings: speed pills, check results, section notes */
+.cr-pills {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 6px;
+}
+
+.cr-pills .cr-toggle {
+	padding: 4px 12px;
+	font-size: var(--font-ui-small);
+}
+
+.cr-setting-status {
+	margin-top: 4px;
+	color: var(--text-muted);
+}
+
+.cr-setting-status.is-good {
+	color: var(--text-success);
+}
+
+.cr-setting-status.is-bad {
+	color: var(--text-error);
+}
+
+.cr-setting-note {
+	padding: 0 0 0.75em;
+}
+
 .cr-status.is-hidden {
 	display: none;
 }
