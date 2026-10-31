@@ -1,6 +1,6 @@
 {
   "name": "chess-journal",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Sync chess games from Lichess and PGN files into one reviewable note per game, with an interactive board, Lichess analysis and offline Stockfish analysis.",
   "main": "main.js",
   "type": "module",
