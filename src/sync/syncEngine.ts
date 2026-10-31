@@ -73,6 +73,8 @@ export interface SyncDeps {
 }
 
 export const RATE_LIMIT_WAIT_MS = 60_000;
+/** Bump when the notes gain keys from Lichess's data, so the next sync re-reads every game once. */
+export const SYNC_DATA_VERSION = 2;
 /** Daily games can start long before they finish; re-check this far back when daily games are synced. */
 export const DAILY_LOOKBACK_MS = 60 * 86_400_000;
 
@@ -134,7 +136,7 @@ export class SyncEngine {
 		const key = user.toLowerCase();
 		const st = (this.deps.state.lichess[key] ??= {});
 		// Changing which games are wanted (speeds, rated, start date) starts again from the start date.
-		const filters = JSON.stringify([[...this.opts.timeClasses].sort(), this.opts.ratedOnly, this.opts.importSince]);
+		const filters = JSON.stringify([[...this.opts.timeClasses].sort(), this.opts.ratedOnly, this.opts.importSince, SYNC_DATA_VERSION]);
 		if (st.filters !== filters) {
 			st.cursor = undefined;
 			st.filters = filters;

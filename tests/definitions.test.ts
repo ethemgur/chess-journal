@@ -73,10 +73,12 @@ describe("openings and review priority", () => {
 		expect(openingFamily(undefined, "B12")).toBe("B12");
 		expect(openingFamily("", "")).toBe("Unknown");
 	});
-	it("review priority = accuracy gap ÷ 10 (0–2) + 0.5 if lost", () => {
-		expect(reviewPriority(80, 90, "win")).toBeCloseTo(1);
-		expect(reviewPriority(80, 90, "loss")).toBeCloseTo(1.5);
-		expect(reviewPriority(90, 80, "loss")).toBeCloseTo(0.5); // I was more accurate: no gap
-		expect(reviewPriority(40, 95, "draw")).toBe(2); // capped
+	it("review priority = blunders + ½ mistakes (≤ 2) + accuracy gap ÷ 10 (≤ 1) + 0.5 thrown win + 0.5 loss", () => {
+		expect(reviewPriority({ result: "win", myAccuracy: 80, oppAccuracy: 90 })).toBeCloseTo(1);
+		expect(reviewPriority({ result: "loss", myAccuracy: 80, oppAccuracy: 90 })).toBeCloseTo(1.5);
+		expect(reviewPriority({ result: "loss", myAccuracy: 90, oppAccuracy: 80 })).toBeCloseTo(0.5); // I was more accurate: no gap
+		expect(reviewPriority({ result: "draw", myAccuracy: 40, oppAccuracy: 95 })).toBe(1); // gap capped
+		expect(reviewPriority({ result: "draw", blunders: 1, mistakes: 1 })).toBe(1.5);
+		expect(reviewPriority({ result: "loss", blunders: 3, mistakes: 2, thrownWin: true })).toBe(3); // errors capped at 2
 	});
 });

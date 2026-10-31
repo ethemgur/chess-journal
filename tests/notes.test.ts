@@ -201,8 +201,12 @@ describe("Lichess analysis", () => {
 	it("takes Lichess's counts for my side and the opponent's", () => {
 		expect(siteAnalysisFrontmatter(analysed())).toEqual({
 			"analysis-status": "done", engine: "lichess", "my-acpl": 12, "my-inaccuracies": 0, "my-mistakes": 0, "my-blunders": 0, "opp-mistakes": 0, "opp-blunders": 1,
+			// Mistake statistics: the game never left the opening; I punished 3...Nf6?? with mate.
+			"my-errors-opening": 0, "my-errors-middlegame": 0, "my-errors-endgame": 0, "missed-chances": 0, "eval-high": 0, "eval-low": 0,
 		});
-		expect(siteAnalysisFrontmatter(analysed("black"))).toMatchObject({ "my-acpl": 410, "my-inaccuracies": 1, "my-blunders": 1, "opp-blunders": 0 });
+		expect(siteAnalysisFrontmatter(analysed("black"))).toMatchObject({
+			"my-acpl": 410, "my-inaccuracies": 1, "my-blunders": 1, "opp-blunders": 0, "my-errors-opening": 1, "first-error-move": 3,
+		});
 		const fm = newNoteFrontmatter(analysed(), "none");
 		expect(fm["site-accuracy"]).toBe(96);
 		expect(renderSummary(fm)).toContain("· Lichess analysis");

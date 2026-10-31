@@ -3,6 +3,9 @@ import type { Colour, GameRecord, MyResult, Result, SideAnalysis, SiteAnalysis, 
 import { clockStats } from "./clock";
 import { positionStats } from "./material";
 import { mainline, parseGame } from "../pgn/tree";
+import { gameAnalysisFromLichess } from "./lichessAnalysis";
+import { errorStats } from "./errors";
+import type { Mark } from "../engine/classify";
 
 /* ------------------------------------------------------------------ */
 /* Shared helpers                                                      */
@@ -79,6 +82,8 @@ export interface LichessGame {
 	pgn?: string;
 	initialFen?: string;
 	analysis?: LichessMoveAnalysis[];
+	/** Plies where the middlegame and endgame begin (division=true); absent when the game never got there. */
+	division?: { middle?: number; end?: number };
 }
 
 const LICHESS_UNFINISHED = new Set(["created", "started", "aborted", "noStart", "unknownFinish"]);
@@ -161,6 +166,15 @@ export function normaliseLichess(g: LichessGame, username: string): Normalised {
 	else if (g.daysPerTurn) timeControl = `1/${g.daysPerTurn * 86400}`;
 	const acc = { white: g.players.white.analysis?.accuracy, black: g.players.black.analysis?.accuracy };
 	const timeClass = lichessTimeClass(g.speed);
+	const siteAnalysis = lichessSiteAnalysis(g);
+	let errors;
+	if (siteAnalysis !== "awaiting") {
+		const a = gameAnalysisFromLichess(`lichess:${g.id}`, g.pgn, siteAnalysis);
+		if (a) {
+			const marks = new Map(Object.entries(a.marks ?? {}).map(([ply, m]) => [Number(ply), m as Mark]));
+			errors = errorStats({ pgn: g.pgn, myColour, plies: a.plies, marks, division: g.division ?? {}, daily: timeClass === "daily" });
+		}
+	}
 	return {
 		ok: true,
 		record: {
@@ -183,7 +197,8 @@ export function normaliseLichess(g: LichessGame, username: string): Normalised {
 			sourceAccuracy: acc.white !== undefined || acc.black !== undefined ? acc : undefined,
 			clock: clockStats(g.pgn, myColour, timeClass === "daily"),
 			position: positionStats(g.pgn, myColour),
-			siteAnalysis: lichessSiteAnalysis(g),
+			siteAnalysis,
+			errors,
 			pgn: g.pgn.trim(),
 		},
 	};

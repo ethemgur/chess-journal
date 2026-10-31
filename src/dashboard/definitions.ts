@@ -1,7 +1,7 @@
 /**
- * Every dashboard term, implemented once. The dashboard uses only what the sites
- * provide (results, ratings, clocks, and Lichess accuracy) and piece
- * counts from the moves; nothing is evaluated by an engine on this device. Unit-tested in tests/definitions.test.ts.
+ * Every dashboard term, implemented once. The dashboard uses what Lichess provides
+ * (results, ratings, clocks, accuracy and its computer analysis), piece counts from
+ * the moves, and Stockfish analyses of OTB games. Unit-tested in tests/definitions.test.ts.
  */
 
 /* ------------------------------------------------------------------ */
@@ -20,8 +20,18 @@ export const CLOCK_EDGE_PCT = 10;
 export const PERFORMANCE_CAP = 800;
 /** Review priority: accuracy gap (opponent − me) per this many points counts 1; capped; plus a loss bonus. */
 export const PRIORITY_GAP_UNIT = 10;
-export const PRIORITY_GAP_CAP = 2;
+export const PRIORITY_GAP_CAP = 1;
 export const PRIORITY_LOST = 0.5;
+/** Review priority: blunders count 1 and mistakes ½, capped; a winning position not won adds this. */
+export const PRIORITY_ERRORS_CAP = 2;
+export const PRIORITY_THROWN = 0.5;
+/** Winning / losing position: an evaluation of at least this many pawns, held for EVAL_LASTING_PLIES positions. */
+export const WINNING_EVAL = 3;
+export const EVAL_LASTING_PLIES = 4;
+/** Evaluations are capped at ± this many pawns (mate counts as the cap). */
+export const EVAL_CAP = 10;
+/** A missed chance: my reply gives back at least this share of what my opponent's mistake gave me (winning chances). */
+export const MISSED_GIVE_BACK = 0.5;
 
 /* ------------------------------------------------------------------ */
 /* Score, expected score, performance                                  */
@@ -144,13 +154,28 @@ export function lostOnTime(result: MyResult, termination?: string): boolean {
 	return result === "loss" && /time/i.test(termination ?? "");
 }
 
+export interface PriorityInput {
+	result: MyResult;
+	blunders?: number;
+	mistakes?: number;
+	myAccuracy?: number;
+	oppAccuracy?: number;
+	/** I held a winning position and did not win. */
+	thrownWin?: boolean;
+}
+
 /**
- * Review priority: how much worse I played than my opponent (accuracy points ÷ 10, 0–2),
- * plus 0.5 if I lost. Needs both accuracies from the site.
+ * Review priority: my blunders (1 each) and mistakes (½ each), up to 2; how much less
+ * accurate I was than my opponent (points ÷ 10, up to 1); +0.5 if I let a winning
+ * position go; +0.5 if I lost.
  */
-export function reviewPriority(myAccuracy: number, oppAccuracy: number, result: MyResult): number {
-	const gap = Math.max(0, Math.min(PRIORITY_GAP_CAP, (oppAccuracy - myAccuracy) / PRIORITY_GAP_UNIT));
-	return gap + (result === "loss" ? PRIORITY_LOST : 0);
+export function reviewPriority(o: PriorityInput): number {
+	const errors = Math.min(PRIORITY_ERRORS_CAP, (o.blunders ?? 0) + 0.5 * (o.mistakes ?? 0));
+	const gap =
+		o.myAccuracy !== undefined && o.oppAccuracy !== undefined
+			? Math.max(0, Math.min(PRIORITY_GAP_CAP, (o.oppAccuracy - o.myAccuracy) / PRIORITY_GAP_UNIT))
+			: 0;
+	return errors + gap + (o.thrownWin ? PRIORITY_THROWN : 0) + (o.result === "loss" ? PRIORITY_LOST : 0);
 }
 
 /* ------------------------------------------------------------------ */

@@ -60,7 +60,7 @@ What the plugin will and won't touch:
 
 ### Frontmatter keys (schema 1)
 
-`cr-schema`, `game-key`, `site`, `url`, `played-at`, `date`, `white`, `black`, `my-colour`, `my-rating`, `opp-rating`, `result`, `my-result`, `termination`, `time-control`, `time-class`, `rated`, `eco`, `opening`, `event`, `round`, `site-accuracy`, `opp-accuracy`, `time-trouble`, `first-10-seconds`, `opp-time-trouble`, `clock-curve`, `opp-clock-curve`, `longest-think`, `longest-think-move`, `moves`, `material-low`, `material-high`, `material-end`, `imbalances`, `endgame`, `analysis-status`, `engine`, `my-acpl`, `my-inaccuracies`, `my-mistakes`, `my-blunders`, `opp-mistakes`, `opp-blunders`, `tags` (shared), `reviewed` (yours).
+`cr-schema`, `game-key`, `site`, `url`, `played-at`, `date`, `white`, `black`, `my-colour`, `my-rating`, `opp-rating`, `result`, `my-result`, `termination`, `time-control`, `time-class`, `rated`, `eco`, `opening`, `event`, `round`, `site-accuracy`, `opp-accuracy`, `time-trouble`, `first-10-seconds`, `opp-time-trouble`, `clock-curve`, `opp-clock-curve`, `longest-think`, `longest-think-move`, `moves`, `material-low`, `material-high`, `material-end`, `imbalances`, `endgame`, `analysis-status`, `engine`, `my-acpl`, `my-inaccuracies`, `my-mistakes`, `my-blunders`, `opp-mistakes`, `opp-blunders`, `my-errors-opening`, `my-errors-middlegame`, `my-errors-endgame`, `my-errors-low-clock`, `missed-chances`, `first-error-move`, `eval-high`, `eval-low`, `tags` (shared), `reviewed` (yours).
 
 `time-control` is written as the sites show it: minutes + increment in seconds (`3+2`, `10+5`, `½+0`), or `3 days` for daily games. The game's PGN keeps its original `TimeControl` tag in seconds. `time-class` is the site's own label (bullet, blitz, rapid, classical, daily).
 
@@ -115,27 +115,33 @@ Off by default. Turn on **Analyse imported games automatically** (under Over-the
 
 ## Performance dashboard
 
-**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes. It uses only what Lichess provides (results, ratings, clock times and Lichess's accuracy figures) plus piece counts from the moves. No game is evaluated by an engine on your device, so it works the same on a phone.
+**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes. It uses what Lichess provides (results, ratings, clock times, accuracy and Lichess's computer analysis), piece counts from the moves, and the Stockfish analyses of your OTB games. Nothing is evaluated while the dashboard is open, so it works the same on a phone.
 
 - **Rating history:** one point per day per time class (the rating before that day's last game).
 - **Rating cards:** live Lichess ratings per time class, with the change over the period. Offline, the latest rating from your notes is shown, marked "from games".
-- **Stat cards:** score, score vs expected (from pre-game ratings), performance rating (per site and time class), accuracy, accuracy vs your opponents in the same games, and time trouble. Each compares with the previous period of the same length.
-- **Panels:** rating history · against stronger and weaker · openings (score, vs expected, accuracy) · comebacks and collapses · material imbalances · endgames · accuracy by result · accuracy by time control · time management · clock race · review queue.
+- **Stat cards:** score, score vs expected (from pre-game ratings), performance rating (per site and time class), accuracy (and your opponents' in the same games), mistakes per game (with blunders and ACPL), and time trouble. Each compares with the previous period of the same length.
+- **Panels:** rating history · mistake trend · where I make mistakes · against stronger and weaker · openings (score, vs expected, accuracy, mistakes per game) · converting and saving · material imbalances · endgames · accuracy by result · accuracy by time control · time management · clock race · review queue.
 
 **Clock statistics** come from the `%clk` times in the PGN (live online games; daily games have none):
 
 - **Time management:** how often you and your opponents got into time trouble (clock below 10% of base time or 30 s), your score when only you, only they, both or neither did, time on your first 10 moves, losses on time (and how many of those you were not behind on material), wins on time, and your median longest think.
 - **Clock race:** median clock left after moves 10, 20, 30 and 40 for you and your opponents (as % of base time), and your score when you had at least 10 points more time, about the same, or less at move 20.
 
+**Mistake statistics** come from the computer analysis: Lichess's for Lichess games, Stockfish's for OTB games. A mistake is Lichess's "Mistake" or "Blunder" (inaccuracies are counted separately). Each analysed note stores where its mistakes happened, and the dashboard adds them up:
+
+- **Mistake trend:** mistakes and blunders per game, month by month.
+- **Where I make mistakes:** mistakes per game (and your opponents'), the share made in time trouble (clock below 10% of base time or 30 s before the move), your opponents' mistakes you did not punish (your reply gave back at least half of what their mistake gave you), the move of your first mistake, games without a mistake, and mistakes per game in the opening, middlegame and endgame (Lichess's own phase split; Lichess games only).
+- These figures only cover analysed games. Lichess analyses a game when you request it, so they may lean towards the games you chose to look at; every panel says how many of the games it covers.
+
 **Material statistics** come from counting the pieces after every move (pawn 1, knight and bishop 3, rook 5, queen 9); a state counts when it lasts three moves or more, so the middle of an exchange is ignored.
 
-- **Comebacks and collapses:** games where you were down at least 3 points and still won or drew ("turned around"), and games where you were up at least 3 points and drew or lost ("let slip"). Sacrifices count too, and a position can be lost without being down material, so these are a lower bound rather than an engine verdict.
+- **Converting and saving:** how often you won when you were winning, and saved games when you were losing. Analysed games use the evaluation (at least 3 pawns for or against you for two moves or more); games without an analysis fall back to material (up or down at least 3 points for three moves or more).
 - **Material imbalances**, named from your side: up or down the exchange, rook vs two minors, queen vs pieces, piece vs pawns, bishop pair (yours or theirs), opposite-coloured bishops. Score and score vs expected for each.
 - **Endgames:** games that reached six or fewer pieces (kings and pawns not counted), and your score in them and in games decided before.
 
 Notes from earlier versions get these keys (and the clock keys below) from their own `chess-game` block in the background shortly after Obsidian starts. **Update move statistics for all games** re-reads every note, for example after you changed a main line in the board editor.
 
-**Accuracy comes from Lichess:** it exists for games analysed on Lichess. The review queue ranks unreviewed games by how much less accurate you were than your opponent in the same game, +0.5 if you lost; **Mark reviewed** sets `reviewed: true` in that note, the dashboard's only write.
+**Accuracy comes from Lichess:** it exists for games analysed on Lichess. The review queue ranks unreviewed games by your blunders (1 each) and mistakes (½ each, up to 2), how much less accurate you were than your opponent (up to 1), +0.5 if you let a winning position go and +0.5 if you lost; **Mark reviewed** sets `reviewed: true` in that note, the dashboard's only write.
 
 Accuracy and analysis that Lichess adds later arrive on the next sync for games marked "awaiting". **Refresh Lichess data for all games** (also **Re-read all** in the settings) downloads all your games again and updates only the Lichess-owned keys, for example after deleting notes you want back (clear **Deleted games** in the settings first).
 

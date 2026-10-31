@@ -1,5 +1,5 @@
 /** Frontmatter schema version 1. Keys are kebab-case and flat for Dataview and Bases. */
-import type { AnalysisStatus, ClockStats, GameRecord, PositionStats } from "../types";
+import type { AnalysisStatus, ClockStats, ErrorStats, GameRecord, PositionStats } from "../types";
 
 export const CR_SCHEMA = 1;
 export const GAME_TAG = "chess-game";
@@ -47,6 +47,18 @@ export const SYNC_KEYS = [
 	...POSITION_KEYS,
 ] as const;
 
+/** Keys read from the analysis: where my mistakes happened, missed chances, best and worst position. */
+export const ERROR_KEYS = [
+	"my-errors-opening",
+	"my-errors-middlegame",
+	"my-errors-endgame",
+	"my-errors-low-clock",
+	"missed-chances",
+	"first-error-move",
+	"eval-high",
+	"eval-low",
+] as const;
+
 /** Keys the plugin may rewrite after analysis. */
 export const ANALYSIS_KEYS = [
 	"analysis-status",
@@ -57,7 +69,25 @@ export const ANALYSIS_KEYS = [
 	"my-blunders",
 	"opp-mistakes",
 	"opp-blunders",
+	...ERROR_KEYS,
 ] as const;
+
+/** Mistake statistics keys; unknown values are left out. */
+export function errorFrontmatter(e?: ErrorStats): Frontmatter {
+	if (!e) return {};
+	const fm: Frontmatter = {
+		"my-errors-opening": e.phases?.opening ?? null,
+		"my-errors-middlegame": e.phases?.middlegame ?? null,
+		"my-errors-endgame": e.phases?.endgame ?? null,
+		"my-errors-low-clock": e.lowClock ?? null,
+		"missed-chances": e.missed,
+		"first-error-move": e.firstError ?? null,
+		"eval-high": e.evalHigh,
+		"eval-low": e.evalLow,
+	};
+	for (const k of Object.keys(fm)) if (fm[k] === null) delete fm[k];
+	return fm;
+}
 
 const FRACTIONS: Record<number, string> = { 15: "¼", 30: "½", 45: "¾" };
 
@@ -175,6 +205,7 @@ export function siteAnalysisFrontmatter(r: GameRecord): Frontmatter | undefined 
 		"my-blunders": me.blunders,
 		"opp-mistakes": opp.mistakes,
 		"opp-blunders": opp.blunders,
+		...errorFrontmatter(r.errors),
 	};
 	if (fm["my-acpl"] === null) delete fm["my-acpl"];
 	return fm;

@@ -1,7 +1,7 @@
 /**
  * Dashboard figures from the game index: filters, periods, summary cards and panels.
- * Uses only what Lichess provides (results, ratings, clocks, Lichess accuracy)
- * and piece counts from the moves.
+ * Uses what Lichess provides (results, ratings, clocks, accuracy and its computer
+ * analysis), piece counts from the moves, and Stockfish analyses of OTB games.
  * Pure functions over GameRow[]; no Obsidian or DOM access.
  */
 import type { Site, TimeClass } from "../types";
@@ -25,6 +25,7 @@ import {
 	points,
 	ratingBand,
 	reviewPriority,
+	WINNING_EVAL,
 	wonOnTime,
 } from "./definitions";
 
@@ -73,7 +74,29 @@ export interface GameRow {
 	materialEnd?: number;
 	imbalances?: Imbalance[];
 	endgame?: boolean;
+	/** From the computer analysis (Lichess's, or Stockfish's for OTB games); undefined until analysed. */
+	analysed: boolean;
+	myInaccuracies?: number;
+	myMistakes?: number;
+	myBlunders?: number;
+	myAcpl?: number;
+	oppMistakes?: number;
+	oppBlunders?: number;
+	errOpening?: number;
+	errMiddlegame?: number;
+	errEndgame?: number;
+	errLowClock?: number;
+	missedChances?: number;
+	firstErrorMove?: number;
+	evalHigh?: number;
+	evalLow?: number;
 }
+
+/** An analysed game: the mistake counts are known. */
+export type AnalysedRow = GameRow & { myMistakes: number; myBlunders: number };
+
+/** My mistakes and blunders in a game (inaccuracies not counted). */
+export const errorsOf = (g: AnalysedRow) => g.myMistakes + g.myBlunders;
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 const num = (v: unknown) =>
@@ -128,6 +151,21 @@ export function rowFromFrontmatter(path: string, fm: Record<string, unknown>): G
 		materialEnd: num(fm["material-end"]),
 		imbalances: num(fm.moves) === undefined ? undefined : imbalanceList(fm.imbalances),
 		endgame: typeof fm.endgame === "boolean" ? fm.endgame : undefined,
+		analysed: fm["analysis-status"] === "done" && num(fm["my-mistakes"]) !== undefined,
+		myInaccuracies: num(fm["my-inaccuracies"]),
+		myMistakes: num(fm["my-mistakes"]),
+		myBlunders: num(fm["my-blunders"]),
+		myAcpl: num(fm["my-acpl"]),
+		oppMistakes: num(fm["opp-mistakes"]),
+		oppBlunders: num(fm["opp-blunders"]),
+		errOpening: num(fm["my-errors-opening"]),
+		errMiddlegame: num(fm["my-errors-middlegame"]),
+		errEndgame: num(fm["my-errors-endgame"]),
+		errLowClock: num(fm["my-errors-low-clock"]),
+		missedChances: num(fm["missed-chances"]),
+		firstErrorMove: num(fm["first-error-move"]),
+		evalHigh: num(fm["eval-high"]),
+		evalLow: num(fm["eval-low"]),
 	};
 }
 
@@ -417,11 +455,15 @@ export interface OpeningRow {
 	vsExpected?: number;
 	accuracy?: number; // mean, accuracy site only
 	accuracyGames: number;
+	/** My mistakes + blunders per analysed game. */
+	errorsPerGame?: number;
+	analysedGames: number;
 	variations?: OpeningRow[];
 }
 
 function openingRow(colour: "white" | "black", family: string, name: string, games: GameRow[], site?: AccuracySite): OpeningRow {
 	const acc = accuracyRows(games, site);
+	const an = analysedRows(games);
 	return {
 		colour,
 		family,
@@ -431,6 +473,8 @@ function openingRow(colour: "white" | "black", family: string, name: string, gam
 		vsExpected: vsExpected(games).diff,
 		accuracy: mean(acc.map((g) => g.myAccuracy)),
 		accuracyGames: acc.length,
+		errorsPerGame: mean(an.map(errorsOf)),
+		analysedGames: an.length,
 	};
 }
 
@@ -563,11 +607,14 @@ function split(games: GameRow[]): ResultSplit {
 }
 
 export interface MaterialFigures {
+	/** Games with an evaluation or move statistics. */
 	withMoves: GameRow[];
 	withoutMoves: number;
-	/** Down at least MATERIAL_SWING for three moves or more. */
+	/** Of withMoves, how many were judged by the evaluation (the rest by material). */
+	byEval: number;
+	/** Losing for a while: evaluation ≤ −WINNING_EVAL, or (no analysis) down MATERIAL_SWING. */
 	down: ResultSplit;
-	/** Up at least MATERIAL_SWING for three moves or more. */
+	/** Winning for a while: evaluation ≥ +WINNING_EVAL, or (no analysis) up MATERIAL_SWING. */
 	up: ResultSplit;
 	/** Down, then won or drew. */
 	turnedAround: GameRow[];
@@ -575,13 +622,26 @@ export interface MaterialFigures {
 	letSlip: GameRow[];
 }
 
+/** I held a winning position (by the evaluation, else by material) for a few moves. */
+export function wasWinning(g: GameRow): boolean {
+	if (g.evalHigh !== undefined) return g.evalHigh >= WINNING_EVAL;
+	return (g.materialHigh ?? 0) >= MATERIAL_SWING;
+}
+
+/** I held a losing position (by the evaluation, else by material) for a few moves. */
+export function wasLosing(g: GameRow): boolean {
+	if (g.evalLow !== undefined) return g.evalLow <= -WINNING_EVAL;
+	return (g.materialLow ?? 0) <= -MATERIAL_SWING;
+}
+
 export function materialFigures(rows: GameRow[]): MaterialFigures {
-	const withMoves = rows.filter((g) => g.moves !== undefined);
-	const down = split(withMoves.filter((g) => (g.materialLow ?? 0) <= -MATERIAL_SWING));
-	const up = split(withMoves.filter((g) => (g.materialHigh ?? 0) >= MATERIAL_SWING));
+	const withMoves = rows.filter((g) => g.evalHigh !== undefined || g.moves !== undefined);
+	const down = split(withMoves.filter(wasLosing));
+	const up = split(withMoves.filter(wasWinning));
 	return {
 		withMoves,
 		withoutMoves: rows.length - withMoves.length,
+		byEval: withMoves.filter((g) => g.evalHigh !== undefined).length,
 		down,
 		up,
 		turnedAround: [...down.wins, ...down.draws],
@@ -624,19 +684,133 @@ export function endgameFigures(rows: GameRow[]): EndgameFigures {
 /* ------------------------------------------------------------------ */
 
 export interface QueueItem {
-	game: AccuracyRow & { oppAccuracy: number };
+	game: GameRow;
 	priority: number;
-	gap: number; // opponent − me, accuracy points
+	/** Opponent − me, accuracy points, when both are known. */
+	gap?: number;
+	thrownWin: boolean;
 }
 
 /**
- * Unreviewed games where both accuracies are known, ranked by how much worse I
- * played than my opponent (+0.5 if lost).
+ * Unreviewed games with an analysis or both accuracies, ranked by my blunders and
+ * mistakes, how much less accurate I was than my opponent, a winning position let go,
+ * and a loss (see reviewPriority).
  */
 export function reviewQueue(rows: GameRow[], n = 10): QueueItem[] {
 	return rows
-		.filter((g): g is AccuracyRow & { oppAccuracy: number } => !g.reviewed && g.myAccuracy !== undefined && g.oppAccuracy !== undefined)
-		.map((g) => ({ game: g, gap: g.oppAccuracy - g.myAccuracy, priority: reviewPriority(g.myAccuracy, g.oppAccuracy, g.myResult) }))
+		.filter((g) => !g.reviewed && (g.analysed || (g.myAccuracy !== undefined && g.oppAccuracy !== undefined)))
+		.map((g) => {
+			const thrownWin = g.evalHigh !== undefined && wasWinning(g) && g.myResult !== "win";
+			const gap = g.myAccuracy !== undefined && g.oppAccuracy !== undefined ? g.oppAccuracy - g.myAccuracy : undefined;
+			const priority = reviewPriority({
+				result: g.myResult,
+				blunders: g.myBlunders,
+				mistakes: g.myMistakes,
+				myAccuracy: g.myAccuracy,
+				oppAccuracy: g.oppAccuracy,
+				thrownWin,
+			});
+			return { game: g, gap, thrownWin, priority };
+		})
+		.filter((q) => q.priority > 0)
 		.sort((a, b) => b.priority - a.priority || b.game.date.localeCompare(a.game.date))
 		.slice(0, n);
+}
+
+/* ------------------------------------------------------------------ */
+/* Mistakes (from the computer analysis)                                */
+/* ------------------------------------------------------------------ */
+
+export function analysedRows(rows: GameRow[]): AnalysedRow[] {
+	return rows.filter((g): g is AnalysedRow => g.analysed && g.myMistakes !== undefined && g.myBlunders !== undefined);
+}
+
+export interface MistakeFigures {
+	analysed: AnalysedRow[];
+	/** My mistakes + blunders per game; blunders and inaccuracies per game; mean ACPL. */
+	errorsPerGame?: number;
+	blundersPerGame?: number;
+	inaccuraciesPerGame?: number;
+	acpl?: number;
+	oppErrorsPerGame?: number;
+	/** Games without a mistake or blunder of mine. */
+	clean: AnalysedRow[];
+	/** Per game, by phase (games with Lichess's phase division only). */
+	phaseGames: AnalysedRow[];
+	byPhase: { opening?: number; middlegame?: number; endgame?: number };
+	/** Share of my mistakes made in time trouble (games with clocks only). */
+	clockGames: AnalysedRow[];
+	lowClockErrors: number;
+	clockErrors: number;
+	lowClockPct?: number;
+	/** Opponent mistakes I did not punish, of all their mistakes. */
+	missed: number;
+	oppErrors: number;
+	missedPct?: number;
+	missedGames: AnalysedRow[];
+	/** Median move of my first mistake (games with one). */
+	firstErrorMedian?: number;
+}
+
+export function mistakeFigures(rows: GameRow[]): MistakeFigures {
+	const analysed = analysedRows(rows);
+	const phaseGames = analysed.filter((g) => g.errOpening !== undefined);
+	const perGame = (gs: AnalysedRow[], f: (g: AnalysedRow) => number | undefined) => mean(gs.map(f).filter((v): v is number => v !== undefined));
+	const clockGames = analysed.filter((g) => g.errLowClock !== undefined);
+	const clockErrors = clockGames.reduce((a, g) => a + errorsOf(g), 0);
+	const lowClockErrors = clockGames.reduce((a, g) => a + (g.errLowClock ?? 0), 0);
+	const withMissed = analysed.filter((g) => g.missedChances !== undefined);
+	const missed = withMissed.reduce((a, g) => a + (g.missedChances ?? 0), 0);
+	const oppErrors = withMissed.reduce((a, g) => a + (g.oppMistakes ?? 0) + (g.oppBlunders ?? 0), 0);
+	return {
+		analysed,
+		errorsPerGame: perGame(analysed, errorsOf),
+		blundersPerGame: perGame(analysed, (g) => g.myBlunders),
+		inaccuraciesPerGame: perGame(analysed, (g) => g.myInaccuracies),
+		acpl: perGame(analysed, (g) => g.myAcpl),
+		oppErrorsPerGame: perGame(analysed, (g) => (g.oppMistakes !== undefined || g.oppBlunders !== undefined ? (g.oppMistakes ?? 0) + (g.oppBlunders ?? 0) : undefined)),
+		clean: analysed.filter((g) => errorsOf(g) === 0),
+		phaseGames,
+		byPhase: {
+			opening: perGame(phaseGames, (g) => g.errOpening),
+			middlegame: perGame(phaseGames, (g) => g.errMiddlegame),
+			endgame: perGame(phaseGames, (g) => g.errEndgame),
+		},
+		clockGames,
+		lowClockErrors,
+		clockErrors,
+		lowClockPct: clockErrors ? (lowClockErrors / clockErrors) * 100 : undefined,
+		missed,
+		oppErrors,
+		missedPct: oppErrors ? (missed / oppErrors) * 100 : undefined,
+		missedGames: withMissed.filter((g) => (g.missedChances ?? 0) > 0),
+		firstErrorMedian: median(analysed.map((g) => g.firstErrorMove).filter((v): v is number => v !== undefined)),
+	};
+}
+
+export interface MistakeMonth {
+	month: string; // YYYY-MM
+	games: AnalysedRow[];
+	errorsPerGame: number;
+	blundersPerGame: number;
+	acpl?: number;
+}
+
+/** Mistakes per analysed game, month by month (oldest first). */
+export function mistakeTrend(rows: GameRow[]): MistakeMonth[] {
+	const byMonth = new Map<string, AnalysedRow[]>();
+	for (const g of analysedRows(rows)) {
+		const m = g.date.slice(0, 7);
+		if (!byMonth.has(m)) byMonth.set(m, []);
+		byMonth.get(m)?.push(g);
+	}
+	return [...byMonth.entries()]
+		.sort((a, b) => a[0].localeCompare(b[0]))
+		.map(([month, games]) => ({
+			month,
+			games,
+			errorsPerGame: mean(games.map(errorsOf)) ?? 0,
+			blundersPerGame: mean(games.map((g) => g.myBlunders)) ?? 0,
+			acpl: mean(games.map((g) => g.myAcpl).filter((v): v is number => v !== undefined)),
+		}));
 }

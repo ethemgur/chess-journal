@@ -19,7 +19,7 @@ import {
 	select,
 	siteTimeGroups,
 	timeFigures,
-	vsExpected,
+	vsExpected, mistakeFigures, mistakeTrend, materialFigures
 } from "../src/dashboard/compute";
 
 let n = 0;
@@ -43,6 +43,7 @@ function game(p: Partial<GameRow>): GameRow {
 		family: "Caro-Kann Defense",
 		opponent: `opp${n}`,
 		reviewed: false,
+		analysed: false,
 		...p,
 	};
 }
@@ -126,17 +127,59 @@ describe("rating history", () => {
 });
 
 describe("review queue", () => {
-	it("ranks by accuracy gap, +0.5 if lost; needs both accuracies; skips reviewed", () => {
+	it("ranks by mistakes, accuracy gap, thrown wins and losses; skips reviewed and clean wins", () => {
 		const rows = [
-			game({ myAccuracy: 70, oppAccuracy: 85, myResult: "win" }), // 1.5
+			game({ myAccuracy: 70, oppAccuracy: 85, myResult: "win" }), // gap 1 (capped)
 			game({ myAccuracy: 75, oppAccuracy: 80, myResult: "loss" }), // 0.5 + 0.5 = 1.0
 			game({ myAccuracy: 50, oppAccuracy: 95, myResult: "loss", reviewed: true }),
-			game({ myAccuracy: 60, myResult: "loss" }), // no opponent accuracy
-			game({ myAccuracy: 90, oppAccuracy: 70, myResult: "draw" }), // 0
+			game({ myAccuracy: 60, myResult: "loss" }), // not analysed, no opponent accuracy: not in the queue
+			game({ myAccuracy: 90, oppAccuracy: 70, myResult: "draw" }), // 0: left out
+			game({ analysed: true, myMistakes: 1, myBlunders: 1, evalHigh: 4, myResult: "draw" }), // 1.5 + 0.5 thrown
 		];
 		const q = reviewQueue(rows);
-		expect(q.map((x) => x.priority)).toEqual([1.5, 1, 0]);
-		expect(q[0].gap).toBe(15);
+		expect(q.map((x) => x.priority)).toEqual([2, 1, 1]);
+		expect(q[0].thrownWin).toBe(true);
+		expect(q[1].gap).toBe(15);
+	});
+});
+
+describe("mistakes", () => {
+	const an = (p: Partial<GameRow>) => game({ analysed: true, myMistakes: 0, myBlunders: 0, myInaccuracies: 0, ...p });
+	it("per game, by phase, in time trouble, missed chances, first mistake", () => {
+		const rows = [
+			an({ myMistakes: 1, myBlunders: 1, myAcpl: 40, oppMistakes: 2, errOpening: 0, errMiddlegame: 2, errEndgame: 0, errLowClock: 1, missedChances: 1, firstErrorMove: 18 }),
+			an({ myMistakes: 0, myBlunders: 0, myAcpl: 20, oppBlunders: 1, errOpening: 0, errMiddlegame: 0, errEndgame: 0, errLowClock: 0, missedChances: 0 }),
+			an({ myMistakes: 2, myBlunders: 0, myAcpl: 30, errLowClock: 2, missedChances: 0, firstErrorMove: 30 }), // no phase division (OTB)
+			game({}), // not analysed
+		];
+		const m = mistakeFigures(rows);
+		expect(m.analysed).toHaveLength(3);
+		expect(m.errorsPerGame).toBeCloseTo(4 / 3);
+		expect(m.blundersPerGame).toBeCloseTo(1 / 3);
+		expect(m.acpl).toBe(30);
+		expect(m.clean).toHaveLength(1);
+		expect(m.phaseGames).toHaveLength(2);
+		expect(m.byPhase).toEqual({ opening: 0, middlegame: 1, endgame: 0 });
+		expect([m.lowClockErrors, m.clockErrors]).toEqual([3, 4]);
+		expect(m.lowClockPct).toBe(75);
+		expect([m.missed, m.oppErrors]).toEqual([1, 3]);
+		expect(m.firstErrorMedian).toBe(24);
+	});
+	it("month by month", () => {
+		const t = mistakeTrend([an({ date: "2026-08-02", myBlunders: 2 }), an({ date: "2026-09-01" }), an({ date: "2026-09-20", myMistakes: 1 })]);
+		expect(t.map((m) => [m.month, m.errorsPerGame, m.blundersPerGame])).toEqual([["2026-08", 2, 2], ["2026-09", 0.5, 0]]);
+	});
+	it("winning and losing positions use the evaluation, else material", () => {
+		const m = materialFigures([
+			game({ evalHigh: 4, evalLow: 0, moves: 30, materialHigh: 0, myResult: "draw" }), // winning by eval, let slip
+			game({ evalHigh: 1, evalLow: -5, moves: 30, materialLow: 0, myResult: "win" }), // losing by eval, saved
+			game({ evalHigh: 1, evalLow: 0, moves: 30, materialHigh: 5, myResult: "loss" }), // eval says not winning: material ignored
+			game({ moves: 30, materialHigh: 3, materialLow: 0, myResult: "win" }), // no analysis: up material, won
+		]);
+		expect(m.byEval).toBe(3);
+		expect(m.up.games).toHaveLength(2);
+		expect(m.letSlip).toHaveLength(1);
+		expect(m.turnedAround).toHaveLength(1);
 	});
 });
 
