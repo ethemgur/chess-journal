@@ -1,22 +1,23 @@
 # Chess Journal
 
-An Obsidian plugin for one serious player reviewing their own games. Every finished game from Lichess, chess.com and over-the-board PGN files lands in your vault as **one reviewable note**: the full PGN with clock times, an interactive board you can annotate, and comparable offline Stockfish analysis.
+An Obsidian plugin for one serious player reviewing their own games. Every finished game from Lichess and over-the-board PGN files lands in your vault as **one reviewable note**: the full PGN with clock times, an interactive board you can annotate, and computer analysis (Lichess's own for Lichess games, Stockfish on your device for OTB games).
 
-Compatible with chess.com and Lichess. Not affiliated with either.
+Compatible with Lichess. Not affiliated with it.
 
 ## What it does
 
-- **Sync** your finished games from Lichess and chess.com (incremental, safe to re-run), and **import PGN files** for OTB games.
+- **Sync** your finished games from Lichess (incremental, safe to re-run), and **import PGN files** for OTB games.
 - **One note per game** with flat frontmatter (`my-result`, `opening`, `my-blunders`, …) that Dataview and Bases can query.
 - **Board viewer and editor** in a `chess-game` code block: variations, comments, move and position symbols, arrows and highlights, clocks and time spent per move. Edits are written back as standard PGN.
-- **Offline analysis** with Stockfish 18 (lite, single-threaded WebAssembly) in a background queue, an eval graph, and mistake marks based on the drop in winning chances.
+- **Lichess analysis** for Lichess games: the counts, accuracy, evaluations and mistake marks Lichess computed. Games not analysed yet are marked "awaiting" and fill in on a later sync.
+- **Offline analysis** for OTB games with Stockfish 18 (lite, single-threaded WebAssembly) in a background queue, an eval graph, and mistake marks based on the drop in winning chances.
 
 ## Setup
 
 1. Install and enable the plugin.
-2. Open **Settings → Chess Journal** and enter your Lichess and/or chess.com username. For chess.com, also enter a contact email; chess.com asks API clients to identify themselves.
-3. Run **Sync all games** from the command palette or the ribbon menu.
-4. Optional: the board's engine (and the analysis queue, off by default) asks to download Stockfish the first time you use it (about 7.3 MB, once). The dashboard does not need it.
+2. Open **Settings → Chess Journal**, enter your Lichess username (**Check** confirms it and shows your ratings), and pick the speeds to import.
+3. Run **Sync Lichess games** from the command palette or the ribbon menu.
+4. Optional: the board's engine (and the OTB analysis queue, off by default) asks to download Stockfish the first time you use it (about 7.3 MB, once). Lichess games and the dashboard do not need it.
 
 Games are written to `Chess/Games` by default. The first sync imports the last 12 months of rapid, classical and daily rated games; change this in the settings.
 
@@ -91,11 +92,21 @@ Keys only apply to the board that has focus. The plugin sets no default hotkeys.
 
 Your edits (moves, comments, symbols, arrows and circles) are written into the note's `chess-game` block when you leave the board: when you tap or click anywhere outside it, switch or close the note, or Obsidian goes to the background. Saving while you work would make Obsidian redraw the block on every change.
 
-## On-device analysis (optional)
+## Lichess analysis
 
-Off by default: the dashboard uses the sites' accuracy instead. Turn on **Analyse new games automatically** (or run **Analyse this game**) if you want Stockfish to analyse games on your device.
+Lichess games use the computer analysis Lichess made of them; nothing runs on your device.
 
-- Each game's main line is analysed once with a fixed setting (1.5 s per position by default), so mistake counts are comparable across sites and months. The setting used is stored in each game's `engine` key.
+- Lichess analyses a game when someone presses **Request a computer analysis** on its page. Its API cannot start one, so the plugin cannot either: **Analyse this game** on a Lichess game opens it on lichess.org for you.
+- A game imported before it was analysed gets `analysis-status: awaiting`. Every sync asks Lichess again for all awaiting games (by ID, 300 per request), and fills the note in once the analysis exists: `analysis-status: done`, `engine: lichess`, your inaccuracies, mistakes, blunders and ACPL, your opponent's mistakes and blunders, and both accuracies.
+- The board shows Lichess's evaluation for every move, its marks (hover a mark for Lichess's comment, such as "Mistake. Nf3 was best.") and its best line where it judged a move inaccurate.
+- An analysis you already ran on this device is kept until Lichess's arrives.
+- Changing the speeds, **Rated games only** or **Games since** re-reads your games from the start date on the next sync.
+
+## On-device analysis for OTB games (optional)
+
+Off by default. Turn on **Analyse imported games automatically** (under Over-the-board games) (or run **Analyse this game** on an OTB game) to have Stockfish analyse imported PGN games on your device.
+
+- Each game's main line is analysed once with a fixed setting (1.5 s per position by default), so mistake counts are comparable across months. The setting used is stored in each game's `engine` key.
 - The opening uses Lichess cloud eval: up to 20 plies, stopping at the first position the cloud doesn't have.
 - **Mistake marks** use the drop in winning chances, the same model Lichess uses. Inaccuracy ≥ 0.10, mistake ≥ 0.20, blunder ≥ 0.30 (on a −1…+1 scale). The engine's best move is never marked, and throwing away a forced mate is at least a mistake.
 - ACPL is shown for continuity only; it does not affect the marks.
@@ -104,10 +115,10 @@ Off by default: the dashboard uses the sites' accuracy instead. Turn on **Analys
 
 ## Performance dashboard
 
-**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes. It uses only what Lichess and chess.com provide (results, ratings, clock times and the sites' own accuracy figures) plus piece counts from the moves. No game is evaluated by an engine on your device, so it works the same on a phone.
+**Open performance dashboard** (command palette or ribbon menu) opens a view built from your game notes. It uses only what Lichess provides (results, ratings, clock times and Lichess's accuracy figures) plus piece counts from the moves. No game is evaluated by an engine on your device, so it works the same on a phone.
 
-- **Rating history:** one point per day per site and time class (the rating before that day's last game).
-- **Rating cards:** live ratings from Lichess and chess.com per time class, never merged across sites, with the change over the period. Offline, the latest rating from your notes is shown, marked "from games".
+- **Rating history:** one point per day per time class (the rating before that day's last game).
+- **Rating cards:** live Lichess ratings per time class, with the change over the period. Offline, the latest rating from your notes is shown, marked "from games".
 - **Stat cards:** score, score vs expected (from pre-game ratings), performance rating (per site and time class), accuracy, accuracy vs your opponents in the same games, and time trouble. Each compares with the previous period of the same length.
 - **Panels:** rating history · against stronger and weaker · openings (score, vs expected, accuracy) · comebacks and collapses · material imbalances · endgames · accuracy by result · accuracy by time control · time management · clock race · review queue.
 
@@ -124,13 +135,13 @@ Off by default: the dashboard uses the sites' accuracy instead. Turn on **Analys
 
 Notes from earlier versions get these keys (and the clock keys below) from their own `chess-game` block in the background shortly after Obsidian starts. **Update move statistics for all games** re-reads every note, for example after you changed a main line in the board editor.
 
-**Accuracy comes from the sites:** Lichess gives it for games analysed on Lichess, chess.com for games with a Game Review. Lichess and chess.com measure accuracy on different scales, so accuracy figures always use one site at a time ("Accuracy from" in the filter bar) and are never averaged across sites. The review queue ranks unreviewed games by how much less accurate you were than your opponent in the same game, +0.5 if you lost; **Mark reviewed** sets `reviewed: true` in that note, the dashboard's only write.
+**Accuracy comes from Lichess:** it exists for games analysed on Lichess. The review queue ranks unreviewed games by how much less accurate you were than your opponent in the same game, +0.5 if you lost; **Mark reviewed** sets `reviewed: true` in that note, the dashboard's only write.
 
-Accuracy that a site adds later (for example after you request an analysis on Lichess) arrives with **Refresh accuracy and site data for all games**, which downloads your games again and updates only these site-owned keys.
+Accuracy and analysis that Lichess adds later arrive on the next sync for games marked "awaiting". **Refresh Lichess data for all games** (also **Re-read all** in the settings) downloads all your games again and updates only the Lichess-owned keys, for example after deleting notes you want back (clear **Deleted games** in the settings first).
 
 ## Commands
 
-Open performance dashboard · Refresh accuracy and site data for all games · Update move statistics for all games · Sync all games · Sync Lichess games · Sync chess.com games · Cancel sync · Import PGN file · Analyse this game · Analyse all unanalysed games · Re-analyse with current settings · Pause / resume analysis · Cancel analysis · Open game on site · Copy PGN · Download engine
+Open performance dashboard · Refresh Lichess data for all games · Update move statistics for all games · Sync Lichess games · Cancel sync · Import PGN file · Analyse this game · Analyse all unanalysed games · Re-analyse with current settings · Pause / resume analysis · Cancel analysis · Open game on site · Copy PGN · Download engine
 
 ## Network use and privacy
 
@@ -138,8 +149,7 @@ All requests go through Obsidian's `requestUrl`, one at a time. There is no tele
 
 | Host | Why |
 | --- | --- |
-| `lichess.org` | Export your finished games (`/api/games/user/…`), cloud evaluations for opening positions (`/api/cloud-eval`), and your current ratings for the dashboard (`/api/user/…`, cached for 5 minutes). If you set a Lichess token, it is sent only to lichess.org. |
-| `api.chess.com` | Read your finished games from the public archives (`/pub/player/…/games/…`), and your current ratings for the dashboard (`/pub/player/…/stats`, cached for an hour). Requests carry a User-Agent with your chess.com username and the contact email you entered. |
+| `lichess.org` | Export your finished games (`/api/games/user/…`), re-check games awaiting analysis (`POST /api/games/export/_ids`), cloud evaluations for opening positions (`/api/cloud-eval`), and your current ratings for the dashboard (`/api/user/…`, cached for 5 minutes). If you set a Lichess token, it is sent only to lichess.org. |
 | `github.com` (release downloads) | Download the Stockfish engine files once, from the GitHub release of the installed plugin version. They are checked against SHA-256 hashes built into the plugin. |
 
 Usernames and tokens are stored only in the plugin's `data.json`. They are never written into notes or logs.
@@ -171,7 +181,7 @@ Source layout:
 src/
   main.ts              plugin entry: commands, status bar, sync orchestration
   settings.ts          settings tab + defaults
-  sources/             Lichess, chess.com and PGN-file clients; normalise.ts -> GameRecord
+  sources/             Lichess and PGN-file clients; normalise.ts -> GameRecord; lichessAnalysis.ts
   sync/syncEngine.ts   incremental sync, de-duplication, cursors, 429 handling
   notes/               note rendering, frontmatter schema, managed regions
   pgn/tree.ts          chessops wrapper: parse, navigate, edit, serialise

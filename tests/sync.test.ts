@@ -1,22 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { RATE_LIMIT_WAIT_MS, SyncEngine, SyncOptions, emptySummary, emptySyncState, formatSummary } from "../src/sync/syncEngine";
-import { MemorySink, lichessGame, mockHttp } from "./helpers";
+import { RATE_LIMIT_WAIT_MS, SyncEngine, SyncOptions, emptySyncState, formatSummary } from "../src/sync/syncEngine";
+import { LICHESS_ANALYSIS, MemorySink, lichessGame, mockHttp } from "./helpers";
 import type { Http } from "../src/sources/http";
 
 const NOW = Date.parse("2026-10-11T12:00:00Z");
 const opts = (o: Partial<SyncOptions> = {}): SyncOptions => ({
 	lichessUsername: "ethem",
 	lichessToken: "",
-	chesscomUsername: "",
-	contactEmail: "me@example.com",
 	timeClasses: ["rapid", "classical"],
 	ratedOnly: true,
 	importSince: "2026-08-15",
-	version: "0.1.0",
 	...o,
 });
 
-function setup(http: Http, o: Partial<SyncOptions> = {}) {
+function setup(http: Http, o: Partial<SyncOptions> = {}, awaitingIds?: () => string[]) {
 	const sink = new MemorySink();
 	const state = emptySyncState();
 	const sleeps: number[] = [];
@@ -31,8 +28,9 @@ function setup(http: Http, o: Partial<SyncOptions> = {}) {
 			now: () => NOW,
 			progress: (m) => progress.push(m),
 			isCancelled: () => false,
+			awaitingIds,
 		});
-	return { sink, state, sleeps, progress, engine };
+	return { sink, state, sleeps, progress, engine, http };
 }
 
 const ndjson = (games: object[]) => games.map((g) => JSON.stringify(g)).join("\n") + "\n";
@@ -150,72 +148,73 @@ describe("Lichess sync", () => {
 	});
 });
 
-describe("chess.com sync", () => {
-	const ARCH = "https://api.chess.com/pub/player/ethem/games/archives";
-	const month = (m: string) => `https://api.chess.com/pub/player/ethem/games/2026/${m}`;
-	const game = (uuid: string, rules = "chess", tc = "rapid") => ({
-		uuid,
-		url: `https://www.chess.com/game/live/${uuid}`,
-		pgn: `[Event "Live Chess"]\n[White "ethem"]\n[Black "opp"]\n[Result "0-1"]\n[UTCDate "2026.09.02"]\n[UTCTime "10:00:00"]\n[ECOUrl "https://www.chess.com/openings/Caro-Kann-Defense-Advance-Variation"]\n\n1. e4 c6 0-1`,
-		time_control: "600",
-		time_class: tc,
-		end_time: Date.parse("2026-09-02T10:20:00Z") / 1000,
-		rated: true,
-		rules,
-		white: { username: "ethem", rating: 2000, result: "resigned" },
-		black: { username: "opp", rating: 1990, result: "win" },
-		accuracies: { white: 81.2, black: 90.1 },
-	});
-	const server = () => {
-		const etags: Record<string, string> = { [month("08")]: '"e8"', [month("09")]: '"e9"' };
-		return mockHttp((req) => {
-			if (req.url === ARCH) return { text: JSON.stringify({ archives: [month("07"), month("08"), month("09")] }) };
-			if (req.headers?.["If-None-Match"] === etags[req.url]) return { status: 304 };
-			if (req.url === month("08")) return { text: JSON.stringify({ games: [game("u1")] }), headers: { etag: etags[req.url] } };
-			if (req.url === month("09"))
-				return { text: JSON.stringify({ games: [game("u2"), game("u3", "chess960"), game("u4", "chess", "bullet")] }), headers: { etag: etags[req.url] } };
-			return { status: 404 };
+describe("Lichess analysis on sync", () => {
+	const g1 = lichessGame("aaaaaaaa", Date.parse("2026-08-20T10:00:00Z"));
+	const g2 = lichessGame("bbbbbbbb", Date.parse("2026-09-03T10:00:00Z"));
+	/** Export windows by date, and POST /api/games/export/_ids by ID; `analysed` IDs come back with Lichess's analysis. */
+	const server = (analysed: Set<string>) =>
+		mockHttp((req) => {
+			const withAnalysis = (g: { id: string }) => (analysed.has(g.id) ? { ...g, ...LICHESS_ANALYSIS } : g);
+			if (req.method === "POST") {
+				const ids = (req.body ?? "").split(",");
+				return { text: ndjson([g1, g2].filter((g) => ids.includes(g.id)).map(withAnalysis)) };
+			}
+			const u = new URL(req.url);
+			const since = Number(u.searchParams.get("since"));
+			const until = Number(u.searchParams.get("until"));
+			return { text: ndjson([g1, g2].filter((g) => g.createdAt >= since && g.createdAt <= until).map(withAnalysis)) };
 		});
-	};
+	const awaiting = (sink: MemorySink) => () =>
+		[...sink.notes.values()].filter((r) => r.siteAnalysis === "awaiting").map((r) => r.key.slice("lichess:".length));
 
-	it("is serial, sends the User-Agent, skips variants and uses ETags", async () => {
-		const http = server();
-		const { sink, engine } = setup(http, { lichessUsername: "", chesscomUsername: "ethem" });
-		const s = await engine().syncChesscom();
-		expect(http.calls.map((c) => c.url)).toEqual([ARCH, month("08"), month("09")]);
-		for (const c of http.calls) expect(c.headers?.["User-Agent"]).toBe("chess-journal/0.1.0 (username: ethem; contact: me@example.com)");
-		expect(s.created).toBe(2);
-		expect(s.skippedVariant).toBe(1);
-		expect(s.skippedFilter).toBe(1);
-		const r = sink.notes.get("chesscom:u2")!;
-		expect(r.myColour).toBe("white");
-		expect(r.myResult).toBe("loss");
-		expect(r.termination).toBe("resignation");
-		expect(r.opening).toBe("Caro-Kann Defense Advance Variation");
-		expect(r.sourceAccuracy?.white).toBe(81.2);
+	it("imports unanalysed games as awaiting, and fills them in once Lichess has analysed them", async () => {
+		const analysed = new Set<string>();
+		const http = server(analysed);
+		const st = setup(http);
+		const sink = st.sink;
+		const engine = () => new SyncEngine(opts(), { ...depsOf(st), awaitingIds: awaiting(sink) });
+		const first = await engine().syncLichess();
+		expect(first.created).toBe(2);
+		expect(first.awaiting).toBe(2);
+		expect(formatSummary(first)).toMatch(/2 awaiting Lichess analysis/);
+		expect(sink.notes.get("lichess:aaaaaaaa")!.siteAnalysis).toBe("awaiting");
 
-		const writes = sink.writes;
-		const again = await engine().syncChesscom();
-		expect(again.created).toBe(0);
-		expect(sink.writes).toBe(writes);
-		const last = http.calls.slice(-2);
-		expect(last.every((c) => c.headers?.["If-None-Match"])).toBe(true);
+		// The user analyses game a on lichess.org; the next sync (past both games' dates) re-checks by ID.
+		analysed.add("aaaaaaaa");
+		const calls = http.calls.length;
+		const second = await engine().syncLichess();
+		const post = http.calls.slice(calls).find((c) => c.method === "POST")!;
+		expect(post.url).toMatch(/^https:\/\/lichess\.org\/api\/games\/export\/_ids\?/);
+		expect(new URL(post.url).searchParams.get("evals")).toBe("true");
+		expect(post.body).toBe("aaaaaaaa,bbbbbbbb");
+		expect(second.updated).toBe(1);
+		expect(second.awaiting).toBe(1);
+		const a = sink.notes.get("lichess:aaaaaaaa")!.siteAnalysis;
+		expect(a !== "awaiting" && a?.white.accuracy).toBe(96);
 	});
 
-	it("runs requests strictly one at a time", async () => {
-		let inFlight = 0;
-		let maxInFlight = 0;
-		const inner = server();
-		const http: Http = async (req) => {
-			inFlight++;
-			maxInFlight = Math.max(maxInFlight, inFlight);
-			await new Promise((r) => setTimeout(r, 2));
-			const res = await inner(req);
-			inFlight--;
-			return res;
-		};
-		const { engine } = setup(http, { lichessUsername: "", chesscomUsername: "ethem" });
-		await engine().syncChesscom(emptySummary());
-		expect(maxInFlight).toBe(1);
+	it("changing the speeds starts again from the start date", async () => {
+		const http = server(new Set());
+		const st = setup(http);
+		await st.engine().syncLichess();
+		expect(st.state.lichess.ethem.cursor).toBe(g2.createdAt);
+		const again = new SyncEngine(opts({ timeClasses: ["rapid", "classical", "blitz"] }), depsOf(st));
+		const calls = http.calls.length;
+		await again.syncLichess();
+		const firstSince = Number(new URL(http.calls[calls].url).searchParams.get("since"));
+		expect(firstSince).toBe(Date.parse("2026-08-15T00:00:00Z"));
 	});
 });
+
+function depsOf(st: ReturnType<typeof setup>) {
+	return {
+		http: st.http,
+		sink: st.sink,
+		state: st.state,
+		saveState: async () => undefined,
+		sleep: async () => undefined,
+		now: () => NOW,
+		progress: () => undefined,
+		isCancelled: () => false,
+	};
+}

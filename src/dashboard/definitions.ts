@@ -1,6 +1,6 @@
 /**
  * Every dashboard term, implemented once. The dashboard uses only what the sites
- * provide (results, ratings, clocks, and Lichess/chess.com accuracy) and piece
+ * provide (results, ratings, clocks, and Lichess accuracy) and piece
  * counts from the moves; nothing is evaluated by an engine on this device. Unit-tested in tests/definitions.test.ts.
  */
 

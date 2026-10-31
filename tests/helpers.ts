@@ -27,6 +27,22 @@ export function lichessGame(id: string, createdAt: number, extra: Record<string,
 	};
 }
 
+/** Lichess's analysis for LICHESS_PGN: 3...Nf6?? is a blunder (3...g6 was best), 4.Qxf7# ends the game. */
+export const LICHESS_ANALYSIS = {
+	players: {
+		white: { user: { name: "ethem", id: "ethem" }, rating: 2004, analysis: { inaccuracy: 0, mistake: 0, blunder: 0, acpl: 12, accuracy: 96 } },
+		black: { user: { name: "opp", id: "opp" }, rating: 1987, analysis: { inaccuracy: 1, mistake: 0, blunder: 1, acpl: 410, accuracy: 41 } },
+	},
+	analysis: [
+		{ eval: 25 },
+		{ eval: 30 },
+		{ eval: -20 },
+		{ eval: -15, best: "g8f6", variation: "Nf6 Qxe5+", judgment: { name: "Inaccuracy", comment: "Inaccuracy. Nf6 was best." } },
+		{ eval: -30 },
+		{ mate: 1, best: "g7g6", variation: "g6 Qf3 Nf6", judgment: { name: "Blunder", comment: "Checkmate is now unavoidable. g6 was best." } },
+	],
+};
+
 /** Scripted HTTP: each handler gets the request and returns a response (or throws). */
 export function mockHttp(handler: (req: HttpRequest, n: number) => Partial<HttpResponse>): Http & { calls: HttpRequest[] } {
 	const calls: HttpRequest[] = [];

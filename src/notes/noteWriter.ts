@@ -11,6 +11,8 @@ import {
 	changedKeys,
 	newNoteFrontmatter,
 	renderYaml,
+	shouldWriteSiteAnalysis,
+	siteAnalysisFrontmatter,
 	syncFrontmatter,
 } from "./frontmatter";
 
@@ -25,7 +27,7 @@ export const CODE_LANG = "chess-game";
 /* Pure rendering helpers                                               */
 /* ------------------------------------------------------------------ */
 
-const SITE_LABEL: Record<string, string> = { lichess: "Lichess", chesscom: "chess.com", otb: "OTB" };
+const SITE_LABEL: Record<string, string> = { lichess: "Lichess", otb: "OTB" };
 
 /** Strip characters that could break the single-line Markdown we write around user-supplied names. */
 export function safeInline(s: unknown): string {
@@ -56,9 +58,13 @@ export function renderSummary(fm: Record<string, unknown>): string {
 			second =
 				`My mistakes: ${plural(n("my-inaccuracies"), "inaccuracy", "inaccuracies")}, ` +
 				`${plural(n("my-mistakes"), "mistake", "mistakes")}, ${plural(n("my-blunders"), "blunder", "blunders")}` +
-				(fm["my-acpl"] !== undefined && fm["my-acpl"] !== null ? ` · ACPL ${fm["my-acpl"]}` : "");
+				(fm["my-acpl"] !== undefined && fm["my-acpl"] !== null ? ` · ACPL ${fm["my-acpl"]}` : "") +
+				(fm.engine === "lichess" ? " · Lichess analysis" : "");
 			break;
 		}
+		case "awaiting":
+			second = "Awaiting Lichess analysis: request a computer analysis on lichess.org, then sync.";
+			break;
 		case "queued":
 			second = "Analysis queued.";
 			break;
@@ -239,12 +245,18 @@ export class NoteWriter {
 	private async update(file: TFile, r: GameRecord): Promise<UpsertResult> {
 		const current = this.app.metadataCache.getFileCache(file)?.frontmatter;
 		if (!current && this.justCreated.has(r.key)) return "unchanged";
-		const wanted = syncFrontmatter(r);
-		const changed = changedKeys(current, wanted, SYNC_KEYS);
+		let wanted = syncFrontmatter(r);
+		let owned: readonly string[] = SYNC_KEYS;
+		const site = siteAnalysisFrontmatter(r);
+		if (site && shouldWriteSiteAnalysis(current, site)) {
+			wanted = { ...wanted, ...site };
+			owned = [...SYNC_KEYS, ...ANALYSIS_KEYS];
+		}
+		const changed = changedKeys(current, wanted, owned);
 		const tags = current?.tags;
 		const hasTag = Array.isArray(tags) ? tags.includes("chess-game") : typeof tags === "string" && tags.includes("chess-game");
 		if (!changed.length && hasTag) return "unchanged";
-		await this.writeOwned(file, wanted, SYNC_KEYS);
+		await this.writeOwned(file, wanted, owned);
 		return "updated";
 	}
 

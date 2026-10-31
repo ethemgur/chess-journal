@@ -41,7 +41,7 @@ describe("move statistics (piece counting)", () => {
 
 	it("frontmatter round trip", () => {
 		const fm = positionFrontmatter({ moves: 40, materialLow: -5, materialHigh: 2, materialEnd: -1, imbalances: ["minor-vs-rook"], endgame: true });
-		const row = rowFromFrontmatter("a.md", { "game-key": "chesscom:1", site: "chesscom", "my-colour": "white", "my-result": "draw", ...fm });
+		const row = rowFromFrontmatter("a.md", { "game-key": "lichess:abcd1234", site: "lichess", "my-colour": "white", "my-result": "draw", ...fm });
 		expect(row).toMatchObject({ moves: 40, materialLow: -5, materialHigh: 2, materialEnd: -1, imbalances: ["minor-vs-rook"], endgame: true });
 		expect(positionFrontmatter({ moves: 10, materialLow: 0, materialHigh: 0, materialEnd: 0, imbalances: [], endgame: false })).not.toHaveProperty("imbalances");
 	});
@@ -50,7 +50,7 @@ describe("move statistics (piece counting)", () => {
 describe("material figures", () => {
 	let n = 0;
 	const g = (p: Partial<GameRow>): GameRow => ({
-		key: `k${++n}`, path: `${n}.md`, site: "chesscom", date: "2026-09-01", playedAt: "", myColour: "white", myResult: "win", result: "1-0",
+		key: `k${++n}`, path: `${n}.md`, site: "lichess", date: "2026-09-01", playedAt: "", myColour: "white", myResult: "win", result: "1-0",
 		myRating: 1500, oppRating: 1500, family: "x", opponent: "o", reviewed: false, moves: 30, materialLow: 0, materialHigh: 0, imbalances: [], endgame: false, ...p,
 	});
 

@@ -44,7 +44,7 @@ describe("clock statistics", () => {
 describe("time figures", () => {
 	let n = 0;
 	const g = (p: Partial<GameRow>): GameRow => ({
-		key: `k${++n}`, path: `${n}.md`, site: "chesscom", date: "2026-09-01", playedAt: "", myColour: "white", myResult: "win", result: "1-0",
+		key: `k${++n}`, path: `${n}.md`, site: "lichess", date: "2026-09-01", playedAt: "", myColour: "white", myResult: "win", result: "1-0",
 		family: "x", opponent: "o", reviewed: false, timeTrouble: false, oppTimeTrouble: false, ...p,
 	});
 

@@ -1,8 +1,7 @@
 /**
  * Dashboard figures from the game index: filters, periods, summary cards and panels.
- * Uses only what the sites provide (results, ratings, clocks, Lichess/chess.com
- * accuracy) and piece counts from the moves. Accuracy is never averaged across sites,
- * because Lichess and chess.com measure it on different scales.
+ * Uses only what Lichess provides (results, ratings, clocks, Lichess accuracy)
+ * and piece counts from the moves.
  * Pure functions over GameRow[]; no Obsidian or DOM access.
  */
 import type { Site, TimeClass } from "../types";
@@ -33,7 +32,7 @@ import {
 /* Index rows                                                          */
 /* ------------------------------------------------------------------ */
 
-export type AccuracySite = "lichess" | "chesscom";
+export type AccuracySite = "lichess";
 
 export interface GameRow {
 	key: string;
@@ -55,7 +54,7 @@ export interface GameRow {
 	opponent: string;
 	reviewed: boolean;
 	termination?: string;
-	/** Site-provided accuracy (Lichess or chess.com scale, by `site`). */
+	/** Lichess-provided accuracy. */
 	myAccuracy?: number;
 	oppAccuracy?: number;
 	/** From the PGN clocks. */
@@ -83,7 +82,8 @@ const num = (v: unknown) =>
 /** Build a row from game-note frontmatter; undefined when the note is not a usable game. */
 export function rowFromFrontmatter(path: string, fm: Record<string, unknown>): GameRow | undefined {
 	const key = str(fm["game-key"]);
-	const site = str(fm.site) as Site | undefined;
+	// Only Lichess and OTB notes count (notes left from the removed chess.com sync are ignored).
+	const site = fm.site === "lichess" || fm.site === "otb" ? (fm.site as Site) : undefined;
 	const myColour = fm["my-colour"] === "black" ? "black" : fm["my-colour"] === "white" ? "white" : undefined;
 	const myResult = fm["my-result"];
 	if (!key || !site || !myColour || (myResult !== "win" && myResult !== "loss" && myResult !== "draw")) return undefined;
@@ -350,14 +350,9 @@ export type AccuracyRow = GameRow & { myAccuracy: number };
 
 const hasAccuracy = (g: GameRow): g is AccuracyRow => g.myAccuracy !== undefined;
 
-/** The accuracy site to use: the preferred one if it has games, else the one with the most. */
+/** The accuracy site to use: Lichess when any game has its accuracy (the preference is kept for older saved filters). */
 export function chooseAccuracySite(rows: GameRow[], preferred?: AccuracySite): AccuracySite | undefined {
-	const count = (s: AccuracySite) => rows.filter((g) => g.site === s && hasAccuracy(g)).length;
-	if (preferred && count(preferred)) return preferred;
-	const l = count("lichess");
-	const c = count("chesscom");
-	if (!l && !c) return preferred;
-	return l >= c ? "lichess" : "chesscom";
+	return rows.some((g) => g.site === "lichess" && hasAccuracy(g)) ? "lichess" : preferred;
 }
 
 /** Games of one site that carry that site's accuracy for me. */
@@ -636,8 +631,7 @@ export interface QueueItem {
 
 /**
  * Unreviewed games where both accuracies are known, ranked by how much worse I
- * played than my opponent (+0.5 if lost). Comparing within one game is fair on
- * either site's scale, so both sites share the queue.
+ * played than my opponent (+0.5 if lost).
  */
 export function reviewQueue(rows: GameRow[], n = 10): QueueItem[] {
 	return rows

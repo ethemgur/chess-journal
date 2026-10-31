@@ -1,5 +1,5 @@
 /** Every source -> one GameRecord. Pure functions, no vault or network access. */
-import type { Colour, GameRecord, MyResult, Result, TimeClass } from "../types";
+import type { Colour, GameRecord, MyResult, Result, SideAnalysis, SiteAnalysis, TimeClass } from "../types";
 import { clockStats } from "./clock";
 import { positionStats } from "./material";
 import { mainline, parseGame } from "../pgn/tree";
@@ -49,7 +49,17 @@ export interface LichessPlayer {
 	user?: { name: string; id?: string };
 	aiLevel?: number;
 	rating?: number;
-	analysis?: { accuracy?: number };
+	/** Present once the game has a computer analysis on Lichess. */
+	analysis?: { inaccuracy?: number; mistake?: number; blunder?: number; acpl?: number; accuracy?: number };
+}
+
+/** One entry of the game's "analysis" array (evals=true): the evaluation after each move. */
+export interface LichessMoveAnalysis {
+	eval?: number;
+	mate?: number;
+	best?: string; // UCI, only when the move was inaccurate
+	variation?: string; // SAN, only when the move was inaccurate
+	judgment?: { name?: string; comment?: string };
 }
 
 export interface LichessGame {
@@ -68,6 +78,7 @@ export interface LichessGame {
 	daysPerTurn?: number;
 	pgn?: string;
 	initialFen?: string;
+	analysis?: LichessMoveAnalysis[];
 }
 
 const LICHESS_UNFINISHED = new Set(["created", "started", "aborted", "noStart", "unknownFinish"]);
@@ -102,6 +113,36 @@ export function lichessTimeClass(speed?: string): TimeClass | undefined {
 		default:
 			return undefined;
 	}
+}
+
+const JUDGMENTS = new Set(["Inaccuracy", "Mistake", "Blunder"]);
+
+function sideAnalysis(p: LichessPlayer): SideAnalysis | undefined {
+	const a = p.analysis;
+	if (!a || (a.inaccuracy === undefined && a.mistake === undefined && a.blunder === undefined)) return undefined;
+	return { inaccuracies: a.inaccuracy ?? 0, mistakes: a.mistake ?? 0, blunders: a.blunder ?? 0, acpl: a.acpl, accuracy: a.accuracy };
+}
+
+/** Lichess's computer analysis of the game, or "awaiting" if it has none yet. */
+export function lichessSiteAnalysis(g: LichessGame): SiteAnalysis | "awaiting" {
+	const white = sideAnalysis(g.players.white);
+	const black = sideAnalysis(g.players.black);
+	if (!white || !black || !g.analysis?.length) return "awaiting";
+	return {
+		white,
+		black,
+		moves: g.analysis.map((m) => {
+			const name = m.judgment?.name;
+			return {
+				cp: m.eval,
+				mate: m.mate,
+				best: m.best,
+				variation: m.variation,
+				judgment: name && JUDGMENTS.has(name) ? (name as "Inaccuracy" | "Mistake" | "Blunder") : undefined,
+				comment: m.judgment?.comment,
+			};
+		}),
+	};
 }
 
 const lichessName = (p: LichessPlayer) => p.user?.name ?? (p.aiLevel ? `Stockfish level ${p.aiLevel}` : "Anonymous");
@@ -142,108 +183,7 @@ export function normaliseLichess(g: LichessGame, username: string): Normalised {
 			sourceAccuracy: acc.white !== undefined || acc.black !== undefined ? acc : undefined,
 			clock: clockStats(g.pgn, myColour, timeClass === "daily"),
 			position: positionStats(g.pgn, myColour),
-			pgn: g.pgn.trim(),
-		},
-	};
-}
-
-/* ------------------------------------------------------------------ */
-/* chess.com                                                           */
-/* ------------------------------------------------------------------ */
-
-export interface ChesscomPlayer {
-	username: string;
-	rating?: number;
-	result: string;
-}
-
-export interface ChesscomGame {
-	url: string;
-	pgn?: string;
-	time_control?: string;
-	time_class?: string;
-	end_time?: number;
-	start_time?: number;
-	rated?: boolean;
-	rules?: string;
-	uuid?: string;
-	eco?: string;
-	white: ChesscomPlayer;
-	black: ChesscomPlayer;
-	accuracies?: { white?: number; black?: number };
-}
-
-const CHESSCOM_TERMINATION: Record<string, string> = {
-	checkmated: "checkmate",
-	resigned: "resignation",
-	timeout: "timeout",
-	abandoned: "abandonment",
-	agreed: "agreement",
-	repetition: "repetition",
-	stalemate: "stalemate",
-	insufficient: "insufficient material",
-	"50move": "50-move rule",
-	timevsinsufficient: "timeout vs insufficient material",
-};
-
-/** "https://www.chess.com/openings/Caro-Kann-Defense-Advance-Variation" -> "Caro-Kann Defense Advance Variation". */
-export function openingFromEcoUrl(url?: string): string | undefined {
-	if (!url) return undefined;
-	const slug = url.split("/openings/")[1];
-	if (!slug) return undefined;
-	return decodeURIComponent(slug)
-		.replace(/-(?=[A-Z0-9])/g, " ")
-		.replace(/\s+/g, " ")
-		.replace(HYPHENATED, (m) => m.replace(" ", "-"))
-		.trim();
-}
-
-/** Opening names that keep their hyphen (slugs use hyphens for spaces too). */
-const HYPHENATED = /\b(Caro Kann|Nimzo Indian|Bogo Indian|Nimzo Larsen|Smith Morra|Max Lange|Schliemann Jaenisch)\b/g;
-
-export function normaliseChesscom(g: ChesscomGame, username: string): Normalised {
-	if (g.rules && g.rules !== "chess") return { ok: false, reason: "variant" };
-	if (!g.pgn) return { ok: false, reason: "invalid" };
-	const tags = pgnTags(g.pgn);
-	const myColour: Colour = sameUser(g.black.username, username) ? "black" : "white";
-	let result: Result;
-	if (g.white.result === "win") result = "1-0";
-	else if (g.black.result === "win") result = "0-1";
-	else result = "1/2-1/2";
-	const tagResult = tags.get("Result");
-	if (tagResult === "*") return { ok: false, reason: "unfinished" };
-	const loser = result === "1-0" ? g.black : result === "0-1" ? g.white : g.white;
-	const tc = g.time_class === "daily" || g.time_class === "bullet" || g.time_class === "blitz" || g.time_class === "rapid"
-		? (g.time_class as TimeClass)
-		: undefined;
-	const playedAt =
-		(g.start_time && new Date(g.start_time * 1000).toISOString().replace(/\.\d{3}Z$/, "Z")) ||
-		dateTimeFromTags(tags) ||
-		(g.end_time ? new Date(g.end_time * 1000).toISOString().replace(/\.\d{3}Z$/, "Z") : "");
-	const uuid = g.uuid ?? g.url.split("/").pop() ?? g.url;
-	const ecoUrl = g.eco ?? tags.get("ECOUrl");
-	const acc = g.accuracies;
-	return {
-		ok: true,
-		record: {
-			key: `chesscom:${uuid}`,
-			site: "chesscom",
-			url: g.url,
-			playedAt,
-			white: { name: g.white.username, rating: g.white.rating },
-			black: { name: g.black.username, rating: g.black.rating },
-			myColour,
-			result,
-			myResult: myResultOf(result, myColour),
-			termination: CHESSCOM_TERMINATION[loser.result] ?? loser.result,
-			timeControl: g.time_control,
-			timeClass: tc,
-			rated: g.rated ?? false,
-			eco: tags.get("ECO"),
-			opening: openingFromEcoUrl(ecoUrl),
-			sourceAccuracy: acc && (acc.white !== undefined || acc.black !== undefined) ? acc : undefined,
-			clock: clockStats(g.pgn, myColour, tc === "daily"),
-			position: positionStats(g.pgn, myColour),
+			siteAnalysis: lichessSiteAnalysis(g),
 			pgn: g.pgn.trim(),
 		},
 	};

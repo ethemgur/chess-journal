@@ -2,7 +2,9 @@ import { requestUrl } from "obsidian";
 
 export interface HttpRequest {
 	url: string;
+	method?: "GET" | "POST";
 	headers?: Record<string, string>;
+	body?: string;
 }
 
 export interface HttpResponse {
@@ -15,7 +17,7 @@ export interface HttpResponse {
 export type Http = (req: HttpRequest) => Promise<HttpResponse>;
 
 export const obsidianHttp: Http = async (req) => {
-	const res = await requestUrl({ url: req.url, method: "GET", headers: req.headers, throw: false });
+	const res = await requestUrl({ url: req.url, method: req.method ?? "GET", headers: req.headers, body: req.body, throw: false });
 	const headers: Record<string, string> = {};
 	for (const [k, v] of Object.entries(res.headers ?? {})) headers[k.toLowerCase()] = v;
 	let text = "";

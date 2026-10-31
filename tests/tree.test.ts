@@ -20,7 +20,7 @@ import {
 } from "../src/pgn/tree";
 
 const fixture = (n: string) => readFileSync(new URL(`./fixtures/${n}`, import.meta.url), "utf8");
-const FIXTURES = ["lichess.pgn", "chesscom.pgn", "chessbase.pgn"];
+const FIXTURES = ["lichess.pgn", "other-site.pgn", "chessbase.pgn"];
 
 describe("round trip", () => {
 	for (const f of FIXTURES) {
@@ -101,7 +101,7 @@ describe("editing", () => {
 		expect((nodeAt(again, [0]) as unknown as { data: { nags?: number[] } }).data.nags).toEqual([3, 14]);
 	});
 	it("walks paths to positions", () => {
-		const g = parseGame(fixture("chesscom.pgn"));
+		const g = parseGame(fixture("other-site.pgn"));
 		const end = infoAt(g, mainlinePath(g));
 		expect(end.pos.isCheckmate()).toBe(true);
 		expect(end.lastUci).toBe("h5f7");

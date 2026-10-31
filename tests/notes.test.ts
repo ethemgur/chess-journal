@@ -11,9 +11,10 @@ import {
 	replaceBlockBody,
 	replaceRegion,
 } from "../src/notes/noteWriter";
-import { applyOwnedKeys, changedKeys, displayTimeControl, formatTimeControl, newNoteFrontmatter, SYNC_KEYS, syncFrontmatter } from "../src/notes/frontmatter";
-import { normaliseChesscom, normaliseLichess } from "../src/sources/normalise";
-import { lichessGame } from "./helpers";
+import { applyOwnedKeys, changedKeys, displayTimeControl, formatTimeControl, newNoteFrontmatter, shouldWriteSiteAnalysis, siteAnalysisFrontmatter, SYNC_KEYS, syncFrontmatter } from "../src/notes/frontmatter";
+import { gameAnalysisFromLichess } from "../src/sources/lichessAnalysis";
+import { normaliseLichess } from "../src/sources/normalise";
+import { LICHESS_ANALYSIS, lichessGame } from "./helpers";
 import type { GameRecord } from "../src/types";
 
 const record = (): GameRecord => {
@@ -32,26 +33,26 @@ describe("note format", () => {
 		expect(note).toContain("my-rating: 2004\nopp-rating: 1987");
 		expect(note).toContain("tags:\n  - chess-game\nreviewed: false\n---");
 		expect(note).toContain("# ethem vs opp, 2026-10-04");
-		expect(note).toContain(`${SUMMARY_START}\nRapid 10+5 · Lichess · 1-0 by checkmate · [open game](https://lichess.org/abcd1234)\nNot analysed yet.\n${SUMMARY_END}`);
+		expect(note).toContain(`${SUMMARY_START}\nRapid 10+5 · Lichess · 1-0 by checkmate · [open game](https://lichess.org/abcd1234)\nAwaiting Lichess analysis: request a computer analysis on lichess.org, then sync.\n${SUMMARY_END}`);
 		expect(firstGameBlock(note)?.trim()).toBe(r.pgn);
 		expect(note.trimEnd().endsWith("## My review")).toBe(true);
 	});
 
 	it("summary after analysis", () => {
 		const s = renderSummary({
-			site: "chesscom",
+			site: "otb",
 			"time-class": "rapid",
 			"time-control": "10+5",
 			result: "0-1",
 			termination: "resignation",
-			url: "https://www.chess.com/game/live/1",
+			url: "https://example.org/game/1",
 			"analysis-status": "done",
 			"my-inaccuracies": 3,
 			"my-mistakes": 1,
 			"my-blunders": 0,
 			"my-acpl": 31,
 		});
-		expect(s).toBe("Rapid 10+5 · chess.com · 0-1 by resignation · [open game](https://www.chess.com/game/live/1)\nMy mistakes: 3 inaccuracies, 1 mistake, 0 blunders · ACPL 31");
+		expect(s).toBe("Rapid 10+5 · OTB · 0-1 by resignation · [open game](https://example.org/game/1)\nMy mistakes: 3 inaccuracies, 1 mistake, 0 blunders · ACPL 31");
 		expect(displayTimeControl("600+5")).toBe("10+5"); // written by an older version
 		expect(displayTimeControl("3+2")).toBe("3+2");
 	});
@@ -169,8 +170,6 @@ describe("site accuracy and clock keys", () => {
 		if (!n.ok) throw new Error("bad fixture");
 		const fm = syncFrontmatter(n.record);
 		expect(fm).toMatchObject({ "site-accuracy": 88.4, "opp-accuracy": 79.1 });
-		// Lichess-only judgement counts are not stored (the dashboard uses what both sites provide).
-		expect(fm["site-mistakes"]).toBeUndefined();
 		// The helper's PGN has no TimeControl tag, so time trouble cannot be judged (real exports have it).
 		expect(fm["time-trouble"]).toBeUndefined();
 		expect(fm["first-10-seconds"]).toBeUndefined();
@@ -182,15 +181,61 @@ describe("site accuracy and clock keys", () => {
 		expect(fm["site-accuracy"]).toBeUndefined();
 		expect(fm["opp-accuracy"]).toBeUndefined();
 	});
-	it("chess.com: accuracies for me and my opponent", () => {
-		const n = normaliseChesscom({
-			uuid: "u1", url: "https://www.chess.com/game/live/1", rules: "chess", time_class: "rapid", time_control: "600", rated: true,
-			pgn: '[White "ethem"]\n[Black "opp"]\n[Result "1-0"]\n[TimeControl "600"]\n\n1. e4 {[%clk 0:09:58]} 1... e5 {[%clk 0:09:50]} 2. Qh5 {[%clk 0:00:20]} 1-0',
-			white: { username: "ethem", rating: 2000, result: "win" }, black: { username: "opp", rating: 1990, result: "resigned" },
-			accuracies: { white: 91.2, black: 70.4 },
-		}, "ethem");
+});
+
+describe("Lichess analysis", () => {
+	const analysed = (colour: "white" | "black" = "white") => {
+		const n = normaliseLichess(lichessGame("anal1234", Date.parse("2026-10-04T18:22:10Z"), LICHESS_ANALYSIS) as never, colour === "white" ? "ethem" : "opp");
 		if (!n.ok) throw new Error("bad fixture");
-		const fm = syncFrontmatter(n.record);
-		expect(fm).toMatchObject({ "site-accuracy": 91.2, "opp-accuracy": 70.4, "time-trouble": true });
+		return n.record;
+	};
+
+	it("an unanalysed Lichess game is awaiting", () => {
+		const r = record();
+		expect(r.siteAnalysis).toBe("awaiting");
+		expect(siteAnalysisFrontmatter(r)).toEqual({ "analysis-status": "awaiting" });
+		expect(newNoteFrontmatter(r, "none")["analysis-status"]).toBe("awaiting");
+		expect(renderSummary(newNoteFrontmatter(r, "none"))).toContain("Awaiting Lichess analysis");
+	});
+
+	it("takes Lichess's counts for my side and the opponent's", () => {
+		expect(siteAnalysisFrontmatter(analysed())).toEqual({
+			"analysis-status": "done", engine: "lichess", "my-acpl": 12, "my-inaccuracies": 0, "my-mistakes": 0, "my-blunders": 0, "opp-mistakes": 0, "opp-blunders": 1,
+		});
+		expect(siteAnalysisFrontmatter(analysed("black"))).toMatchObject({ "my-acpl": 410, "my-inaccuracies": 1, "my-blunders": 1, "opp-blunders": 0 });
+		const fm = newNoteFrontmatter(analysed(), "none");
+		expect(fm["site-accuracy"]).toBe(96);
+		expect(renderSummary(fm)).toContain("· Lichess analysis");
+	});
+
+	it("OTB games have no site analysis", () => {
+		expect(siteAnalysisFrontmatter({ ...record(), site: "otb", siteAnalysis: undefined })).toBeUndefined();
+	});
+
+	it("awaiting never replaces an analysis made on this device; a Lichess analysis always wins", () => {
+		const awaiting = { "analysis-status": "awaiting" } as const;
+		expect(shouldWriteSiteAnalysis({ "analysis-status": "none" }, awaiting)).toBe(true);
+		expect(shouldWriteSiteAnalysis(undefined, awaiting)).toBe(true);
+		expect(shouldWriteSiteAnalysis({ "analysis-status": "done", engine: "stockfish-18-lite@1.5s" }, awaiting)).toBe(false);
+		expect(shouldWriteSiteAnalysis({ "analysis-status": "queued" }, awaiting)).toBe(false);
+		expect(shouldWriteSiteAnalysis({ "analysis-status": "done", engine: "stockfish-18-lite@1.5s" }, siteAnalysisFrontmatter(analysed())!)).toBe(true);
+	});
+
+	it("builds the board's analysis: one evaluation per position, Lichess's marks, best lines in UCI", () => {
+		const r = analysed();
+		if (r.siteAnalysis === "awaiting" || !r.siteAnalysis) throw new Error("expected analysis");
+		const a = gameAnalysisFromLichess(r.key, r.pgn, r.siteAnalysis)!;
+		expect(a.engine).toBe("lichess");
+		expect(a.plies.map((p) => p.ply)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+		expect(a.plies[1].score).toEqual({ cp: 25 });
+		expect(a.plies[6].score).toEqual({ mate: 1 });
+		// After 4.Qxf7# Lichess gives no evaluation: the checkmate is scored from the position.
+		expect(a.plies[7].score.cp).toBeGreaterThan(0);
+		expect(a.marks).toEqual({ 4: "inaccuracy", 6: "blunder" });
+		expect(a.comments?.[6]).toMatch(/g6 was best/);
+		// The alternative to 3...Nf6 is shown on the position before it (ply 5).
+		expect(a.plies[5].best).toBe("g7g6");
+		expect(a.plies[5].pv).toEqual(["g7g6", "h5f3", "g8f6"]);
+		expect(a.plies[0].score).toEqual({ cp: 25 });
 	});
 });

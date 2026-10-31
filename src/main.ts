@@ -15,7 +15,8 @@ import { DashboardView, VIEW_TYPE_DASHBOARD } from "./dashboard/DashboardView";
 import { GameIndex } from "./dashboard/gameIndex";
 import { RatingsCache } from "./dashboard/ratings";
 import { Filters, GameRow, defaultFilters } from "./dashboard/compute";
-import { chesscomUserAgent } from "./sources/chesscom";
+import { gameAnalysisFromLichess } from "./sources/lichessAnalysis";
+import type { UpsertResult } from "./sync/syncEngine";
 import { positionStats } from "./sources/material";
 import { clockStats } from "./sources/clock";
 import { CLOCK_KEYS, POSITION_KEYS, applyOwnedKeys, changedKeys, clockFrontmatter, positionFrontmatter } from "./notes/frontmatter";
@@ -122,7 +123,6 @@ export default class ChessJournalPlugin extends Plugin {
 				index: this.gameIndex,
 				ratings: this.ratings,
 				settings: () => this.settings,
-				chesscomUserAgent: () => chesscomUserAgent(this.manifest.version, this.settings.chesscomUsername, this.settings.contactEmail),
 				filters: () => this.data.dashboardFilters ?? defaultFilters(this.settings.dashboardPeriod),
 				saveFilters: (f) => {
 					this.data.dashboardFilters = f;
@@ -148,7 +148,7 @@ export default class ChessJournalPlugin extends Plugin {
 
 		this.addRibbonIcon("crown", "Chess Journal", (e) => {
 			const menu = new Menu();
-			menu.addItem((i) => i.setTitle("Sync all games").setIcon("refresh-cw").onClick(() => void this.runSync("all")));
+			menu.addItem((i) => i.setTitle("Sync Lichess games").setIcon("refresh-cw").onClick(() => void this.runSync()));
 			menu.addItem((i) => i.setTitle("Import PGN file").setIcon("file-input").onClick(() => this.importPgn()));
 			menu.addItem((i) => i.setTitle("Open performance dashboard").setIcon("bar-chart-2").onClick(() => void this.openDashboard()));
 			menu.addItem((i) =>
@@ -167,7 +167,7 @@ export default class ChessJournalPlugin extends Plugin {
 			const t = window.setTimeout(() => void this.updatePositionStats((this.data.moveStatsVersion ?? 0) < MOVE_STATS_VERSION), 5_000);
 			this.register(() => window.clearTimeout(t));
 			if (this.settings.syncOnStartup) {
-				const t = window.setTimeout(() => void this.runSync("all"), 30_000);
+				const t = window.setTimeout(() => void this.runSync(), 30_000);
 				this.register(() => window.clearTimeout(t));
 			}
 		});
@@ -187,9 +187,13 @@ export default class ChessJournalPlugin extends Plugin {
 
 	private async loadPluginData(): Promise<void> {
 		const raw = ((await this.loadData()) ?? {}) as Partial<PluginData>;
+		const settings = Object.assign(defaultSettings(), raw.settings ?? {}) as ChessJournalSettings & Record<string, unknown>;
+		// chess.com support was removed: drop its settings and sync state.
+		delete settings.chesscomUsername;
+		delete settings.contactEmail;
 		this.data = {
-			settings: Object.assign(defaultSettings(), raw.settings ?? {}),
-			sync: Object.assign(emptySyncState(), raw.sync ?? {}),
+			settings,
+			sync: { lichess: raw.sync?.lichess ?? {} },
 			deletedKeys: raw.deletedKeys ?? [],
 			queue: Object.assign({ queue: [], paused: false }, raw.queue ?? {}),
 			editedPgn: raw.editedPgn ?? {},
@@ -332,9 +336,7 @@ export default class ChessJournalPlugin extends Plugin {
 	/* ------------------------------------------------------------ */
 
 	private registerCommands(): void {
-		this.addCommand({ id: "sync-all", name: "Sync all games", callback: () => void this.runSync("all") });
-		this.addCommand({ id: "sync-lichess", name: "Sync Lichess games", callback: () => void this.runSync("lichess") });
-		this.addCommand({ id: "sync-chesscom", name: "Sync chess.com games", callback: () => void this.runSync("chesscom") });
+		this.addCommand({ id: "sync-lichess", name: "Sync Lichess games", callback: () => void this.runSync() });
 		this.addCommand({ id: "cancel-sync", name: "Cancel sync", checkCallback: (checking) => {
 			if (!this.syncing) return false;
 			if (!checking) this.syncCancelled = true;
@@ -347,7 +349,9 @@ export default class ChessJournalPlugin extends Plugin {
 			checkCallback: (checking) => {
 				const key = this.activeGameKey();
 				if (!key) return false;
-				if (!checking) void this.enqueue([key], true);
+				if (checking) return true;
+				if (isLichessKey(key)) this.analyseOnLichess(key);
+				else void this.enqueue([key], true);
 				return true;
 			},
 		});
@@ -355,9 +359,10 @@ export default class ChessJournalPlugin extends Plugin {
 			id: "analyse-unanalysed",
 			name: "Analyse all unanalysed games",
 			callback: () => {
+				// Lichess games are analysed by Lichess; only OTB games use the engine on this device.
 				const keys = this.gamesWhere((fm) => {
 					const s = fm["analysis-status"];
-					return s === undefined || s === "none" || s === "failed";
+					return fm.site !== "lichess" && (s === undefined || s === "none" || s === "failed");
 				});
 				void this.enqueue(keys, false);
 			},
@@ -367,7 +372,7 @@ export default class ChessJournalPlugin extends Plugin {
 			name: "Re-analyse with current settings",
 			callback: () => {
 				const label = engineLabel(this.settings);
-				const keys = this.gamesWhere((fm) => fm["analysis-status"] === "done" && fm.engine !== label);
+				const keys = this.gamesWhere((fm) => fm.site !== "lichess" && fm["analysis-status"] === "done" && fm.engine !== label);
 				void this.enqueue(keys, false);
 			},
 		});
@@ -416,14 +421,8 @@ export default class ChessJournalPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "refresh-site-data",
-			name: "Refresh accuracy and site data for all games",
-			callback: async () => {
-				// Re-fetch everything since "Import games since": notes only get their site-owned keys
-				// (accuracy, clocks, move statistics) updated; nothing else is touched.
-				this.data.sync = emptySyncState();
-				await this.savePluginData();
-				await this.runSync("all");
-			},
+			name: "Refresh Lichess data for all games",
+			callback: () => void this.refreshAll(),
 		});
 	}
 
@@ -441,6 +440,44 @@ export default class ChessJournalPlugin extends Plugin {
 				if (this.settings.autoAnalyse) void this.queue.enqueue([r.key]);
 			},
 		});
+	}
+
+	/**
+	 * Re-fetch everything since "Import games since": notes only get their Lichess-owned keys
+	 * (accuracy, Lichess analysis, clocks, move statistics) updated; nothing else is touched.
+	 */
+	async refreshAll(): Promise<void> {
+		this.data.sync = emptySyncState();
+		await this.savePluginData();
+		await this.runSync();
+	}
+
+	/** Lichess games are analysed on lichess.org: open the game there to request it. */
+	private analyseOnLichess(key: string): void {
+		new Notice(
+			"Chess Journal: Lichess games use Lichess's own analysis. On the game page, press “Request a computer analysis”, then sync.",
+			10_000,
+		);
+		window.open(`https://lichess.org/${key.slice("lichess:".length)}`);
+	}
+
+	/** Sink for sync: writes the note, then keeps the board's analysis in step with Lichess's. */
+	private async upsertSynced(r: GameRecord): Promise<UpsertResult> {
+		const result = await this.notes.upsert(r);
+		if (result === "deleted") return result;
+		const a = r.siteAnalysis;
+		if (a && a !== "awaiting") {
+			const cached = await this.cache.get(r.key);
+			if (result !== "unchanged" || cached?.engine !== "lichess") {
+				// Lichess's evaluations follow Lichess's own PGN of the game.
+				const analysis = gameAnalysisFromLichess(r.key, r.pgn, a);
+				if (analysis) await this.cache.set(analysis);
+			}
+		} else if (a === "awaiting" && result === "created") {
+			// A re-imported game must not show an old on-device analysis.
+			await this.cache.remove(r.key);
+		}
+		return result;
 	}
 
 	private activeFrontmatter(): Record<string, unknown> | undefined {
@@ -501,38 +538,32 @@ export default class ChessJournalPlugin extends Plugin {
 	/* Sync                                                         */
 	/* ------------------------------------------------------------ */
 
-	async runSync(which: "all" | "lichess" | "chesscom"): Promise<void> {
+	async runSync(): Promise<void> {
 		const s = this.settings;
 		if (this.syncing) {
 			new Notice("Chess Journal: a sync is already running.");
 			return;
 		}
-		const doLichess = which !== "chesscom" && !!s.lichessUsername;
-		const doChesscom = which !== "lichess" && !!s.chesscomUsername;
-		if (!doLichess && !doChesscom) {
-			new Notice("Chess Journal: set your Lichess or chess.com username in the settings first.");
+		if (!s.lichessUsername) {
+			new Notice("Chess Journal: set your Lichess username in the settings first.");
 			return;
 		}
 		this.syncing = true;
 		this.syncCancelled = false;
-		const created: string[] = [];
 		new Notice("Chess Journal: sync started.");
 		try {
 			this.notes.buildIndex();
 			const engine = new SyncEngine(
 				{
-					lichessUsername: doLichess ? s.lichessUsername : "",
+					lichessUsername: s.lichessUsername,
 					lichessToken: s.lichessToken,
-					chesscomUsername: doChesscom ? s.chesscomUsername : "",
-					contactEmail: s.contactEmail,
 					timeClasses: s.timeClasses,
 					ratedOnly: s.ratedOnly,
 					importSince: s.importSince,
-					version: this.manifest.version,
 				},
 				{
 					http: obsidianHttp,
-					sink: this.notes,
+					sink: { upsert: (r) => this.upsertSynced(r) },
 					state: this.data.sync,
 					saveState: () => this.savePluginData(),
 					sleep: (ms) => new Promise((r) => window.setTimeout(r, ms)),
@@ -542,15 +573,15 @@ export default class ChessJournalPlugin extends Plugin {
 						this.renderStatus();
 					},
 					isCancelled: () => this.syncCancelled,
-					onCreated: (r) => created.push(r.key),
+					awaitingIds: () =>
+						this.gamesWhere((fm) => fm.site === "lichess" && fm["analysis-status"] === "awaiting")
+							.filter(isLichessKey)
+							.map((k) => k.slice("lichess:".length)),
 				},
 			);
-			const summary = emptySummary();
-			if (doLichess) await engine.syncLichess(summary);
-			if (doChesscom && !summary.aborted && !summary.cancelled) await engine.syncChesscom(summary);
-			const notes = summary.notes.filter((n) => !n.startsWith("chess.com refreshes") || doChesscom);
+			const summary = await engine.syncLichess(emptySummary());
+			const notes = summary.notes;
 			new Notice(`Chess Journal sync finished: ${formatSummary(summary)}` + (notes.length ? `\n${notes.slice(0, 4).join("\n")}` : ""), 10_000);
-			if (created.length && s.autoAnalyse) await this.queue.enqueue(created);
 		} catch (e) {
 			new Notice(`Chess Journal sync failed: ${(e as Error).message}`, 10_000);
 			console.error("Chess Journal sync:", e);
@@ -666,3 +697,4 @@ class EngineDownloadModal extends Modal {
 	}
 }
 
+const isLichessKey = (key: string) => key.startsWith("lichess:");

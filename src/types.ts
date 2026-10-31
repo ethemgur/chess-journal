@@ -1,4 +1,4 @@
-export type Site = "lichess" | "chesscom" | "otb";
+export type Site = "lichess" | "otb";
 export type Colour = "white" | "black";
 export type Result = "1-0" | "0-1" | "1/2-1/2";
 export type MyResult = "win" | "loss" | "draw";
@@ -8,7 +8,7 @@ export const TIME_CLASSES: TimeClass[] = ["bullet", "blitz", "rapid", "classical
 
 /** Every source is converted into one GameRecord before anything touches the vault. */
 export interface GameRecord {
-	key: string; // "lichess:abcd1234" | "chesscom:<uuid>" | "otb:<sha1>"
+	key: string; // "lichess:abcd1234" | "otb:<sha1>"
 	site: Site;
 	url?: string;
 	playedAt: string; // ISO 8601, UTC, game start
@@ -30,10 +30,32 @@ export interface GameRecord {
 	clock?: ClockStats;
 	/** From the PGN's moves (piece counting, no engine). */
 	position?: PositionStats;
+	/**
+	 * Lichess games only: Lichess's own computer analysis, or "awaiting" while the game
+	 * has not been analysed on lichess.org yet. Undefined for OTB games (analysed on device).
+	 */
+	siteAnalysis?: SiteAnalysis | "awaiting";
 	pgn: string;
 }
 
-export type AnalysisStatus = "none" | "queued" | "running" | "done" | "failed";
+export interface SideAnalysis {
+	inaccuracies: number;
+	mistakes: number;
+	blunders: number;
+	acpl?: number;
+	accuracy?: number;
+}
+
+/** A computer analysis made by the site (Lichess), as the site reported it. */
+export interface SiteAnalysis {
+	white: SideAnalysis;
+	black: SideAnalysis;
+	/** One entry per main-line move: evaluation after the move (White's view), and Lichess's judgement of it. */
+	moves: Array<{ cp?: number; mate?: number; best?: string; variation?: string; judgment?: "Inaccuracy" | "Mistake" | "Blunder"; comment?: string }>;
+}
+
+/** "awaiting": a Lichess game that has not been analysed on lichess.org yet. */
+export type AnalysisStatus = "none" | "awaiting" | "queued" | "running" | "done" | "failed";
 
 
 export interface ClockStats {
