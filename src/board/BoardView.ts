@@ -36,6 +36,7 @@ import {
 	parseMoveUci,
 	parseTimeControl,
 	pathKey,
+	pgnHash,
 	promoteVariation,
 	serialise,
 	setNag,
@@ -166,6 +167,8 @@ export class BoardView {
 	private longPressTimer?: number;
 	private lastRightDown = 0;
 	private lastSaved: string;
+	/** The PGN being written right now, if a save is in flight. */
+	private savingPgn?: string;
 	private saveChain: Promise<void> = Promise.resolve();
 	/** Last scroll position of the move list (a detached element reports 0, so track it live). */
 	private movesScroll = 0;
@@ -879,6 +882,9 @@ export class BoardView {
 		if (pgn === undefined) return;
 		this.pendingSave = undefined;
 		if (pgn === this.lastSaved) return;
+		// The note can be re-rendered while the write is still in flight; the new block
+		// must already recognise this text as the board's, or it would build a new board.
+		this.savingPgn = pgn;
 		try {
 			await this.host.save(pgn, this.lastSaved);
 			this.lastSaved = pgn;
@@ -886,6 +892,8 @@ export class BoardView {
 			// Keep the edit so a later attempt (or Copy PGN) can still recover it.
 			if (this.pendingSave === undefined) this.pendingSave = pgn;
 			new Notice(`Chess Journal: could not save the game: ${(e as Error).message}`);
+		} finally {
+			this.savingPgn = undefined;
 		}
 	}
 
@@ -898,15 +906,18 @@ export class BoardView {
 		return this.root.offsetHeight;
 	}
 
-	/** The PGN last written to the note (what a re-rendered block will contain). */
-	savedPgn(): string {
-		return this.lastSaved;
+	/** Whether a re-rendered block with this text is this board's own (saved or being saved). */
+	ownsText(hash: string): boolean {
+		return pgnHash(this.lastSaved) === hash || (this.savingPgn !== undefined && pgnHash(this.savingPgn) === hash);
 	}
 
 	/** Move this board into a re-rendered block instead of rebuilding it. */
 	adopt(container: HTMLElement, host: BoardHost): void {
 		this.host = host;
 		this.container = container;
+		// Moving a focused element drops its focus; give it back afterwards.
+		const active = document.activeElement;
+		const hadFocus = !!active && this.root.contains(active);
 		// Moving the element resets its scroll; put the move list back where it was.
 		container.appendChild(this.root);
 		const restore = () => {
@@ -918,7 +929,7 @@ export class BoardView {
 		// Keep the board's DOM as it is; just let chessground re-measure its position.
 		this.cg?.state.dom.bounds.clear();
 		window.requestAnimationFrame(() => this.syncLayout());
-		if (this.state.hadFocus) {
+		if (hadFocus || this.state.hadFocus) {
 			this.state.hadFocus = false;
 			this.root.focus({ preventScroll: true });
 		}
